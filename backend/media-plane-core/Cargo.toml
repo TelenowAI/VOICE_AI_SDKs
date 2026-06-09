@@ -1,0 +1,11 @@
+[package]
+name = "telenow-media-plane"
+version = "0.1.0"
+edition = "2021"
+description = "Telenow media-plane control kernels: keep-session-warm (mid-call resume), capacity admission, graceful drain, provider circuit-breaker (failover), and affinity routing. Pure std — deterministic + unit-tested; the live backend supplies clock + counters and calls these."
+license = "MIT"
+
+[dependencies]
+
+# Standalone workspace root — isolated from the live backend crate.
+[workspace]

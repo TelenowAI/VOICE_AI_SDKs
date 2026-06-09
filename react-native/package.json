@@ -1,0 +1,16 @@
+{
+  "name": "@telenow/react-native",
+  "version": "0.1.0",
+  "description": "Telenow Voice SDK for React Native (iOS + Android). Native audio I/O over the shared Rust core.",
+  "main": "src/index.ts",
+  "files": ["src", "android", "ios", "telenow-react-native.podspec", "README.md"],
+  "dependencies": {
+    "@telenow/client": "^0.1.0"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  },
+  "keywords": ["voice", "ai", "react-native", "telenow"],
+  "license": "MIT"
+}

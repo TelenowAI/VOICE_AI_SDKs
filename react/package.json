@@ -1,0 +1,33 @@
+{
+  "name": "@telenow/react",
+  "version": "0.1.0",
+  "description": "React bindings for the Telenow Voice SDK — useVoiceCall() over @telenow/client.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "peerDependencies": {
+    "@telenow/client": "^0.1.0",
+    "react": ">=18"
+  },
+  "keywords": ["voice", "ai", "react", "hook", "telenow"],
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "devDependencies": {
+    "@telenow/client": "file:../client-web",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "^5.6.2"
+  }
+}

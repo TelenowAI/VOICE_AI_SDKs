@@ -1,0 +1,28 @@
+{
+  "name": "@telenow/server",
+  "version": "0.1.0",
+  "description": "Telenow Voice SDK — backend client: mint client tokens, place/transfer calls, manage agents, verify webhooks. Zero deps, runtime-agnostic.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "node --test",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": ["voice", "ai", "telenow", "webhooks", "backend", "tokens"],
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}

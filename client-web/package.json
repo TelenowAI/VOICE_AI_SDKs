@@ -1,0 +1,29 @@
+{
+  "name": "@telenow/client",
+  "version": "0.1.0",
+  "description": "Telenow Voice SDK — headless browser client: HD (16 kHz) mic capture, adaptive jitter buffer, μ-law/PCM codecs. Framework-agnostic.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --test",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": ["voice", "ai", "voice-ai", "websocket", "telephony", "jitter-buffer", "telenow"],
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}

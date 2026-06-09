@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "telenow"
+version = "0.1.0"
+description = "Telenow Voice SDK — Python backend client: mint client tokens, place/transfer calls, manage agents, verify webhooks."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["voice", "ai", "telenow", "webhooks"]
+dependencies = []
+
+[project.optional-dependencies]
+django = ["django>=3.2"]
+
+[project.urls]
+Homepage = "https://telenow.ai"
+
+[tool.hatch.build.targets.wheel]
+packages = ["telenow"]

@@ -1,0 +1,22 @@
+name: telenow
+description: Telenow Voice SDK for Flutter — native audio over the shared Rust core.
+version: 0.1.0
+homepage: https://telenow.ai
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: '>=3.10.0'
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  ffigen: ^11.0.0
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: ai.telenow.sdk
+        pluginClass: TelenowPlugin
+      ios:
+        pluginClass: TelenowPlugin

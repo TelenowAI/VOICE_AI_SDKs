@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.build/master.swiftdeps"
+  },
+  "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.derived/runner.swift": {
+    "dependencies": "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.build/runner.d",
+    "object": "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.build/runner.swift.o",
+    "swiftmodule": "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.build/runner~partial.swiftmodule",
+    "swift-dependencies": "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDKPackageTests.build/runner.swiftdeps"
+  }
+}

@@ -1,0 +1,253 @@
+openapi: 3.0.3
+info:
+  title: Telenow Voice API
+  version: 0.1.0
+  description: >
+    Control-plane API for the Telenow Voice SDK. Generate backend clients in any
+    language from this spec (see README). Audio is carried over a separate
+    WebSocket (`/ws/web-agent`), not described here.
+servers:
+  - url: https://api.telenow.ai
+    description: Production
+  - url: http://localhost:3005
+    description: Local dev
+
+security:
+  - ApiKeyAuth: []
+
+paths:
+  /api/client-tokens:
+    post:
+      operationId: createClientToken
+      summary: Mint a short-lived, scoped client token for a browser/app.
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientTokenRequest' }
+      responses:
+        '200':
+          description: Token minted
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/ClientToken' } }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /api/sessions/initiate-call:
+    post:
+      operationId: initiateCall
+      summary: Place an outbound PSTN call.
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitiateCallRequest' }
+      responses:
+        '200':
+          description: Call started
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/CallResult' } }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/sessions/{id}/transfer:
+    post:
+      operationId: transferCall
+      summary: Warm-transfer a live call to a phone number.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties: { to: { type: string, example: '+15551234567' } }
+      responses:
+        '200': { description: Transferred }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/sessions/{id}:
+    delete:
+      operationId: endSession
+      summary: End a session.
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200': { description: Ended }
+
+  /api/sessions/init-web-call:
+    post:
+      operationId: initWebCall
+      summary: Initialize a browser/app call. Authorize with a client token (Bearer) or API key.
+      security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId: { type: string }
+                variables: { type: object, additionalProperties: { type: string } }
+      responses:
+        '200':
+          description: Session ready
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/SessionInfo' } }
+
+  /api/public/widget/{slug}/session:
+    post:
+      operationId: createPublicWidgetSession
+      summary: Start an anonymous public-widget session (no auth).
+      security: []
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                accessCode: { type: string }
+                variables: { type: object, additionalProperties: { type: string } }
+                lead: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Session ready
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - properties: { data: { $ref: '#/components/schemas/SessionInfo' } }
+
+  /api/agents:
+    get:
+      operationId: listAgents
+      summary: List agents.
+      responses: { '200': { description: OK } }
+    post:
+      operationId: createAgent
+      summary: Create an agent.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
+      responses: { '200': { description: Created } }
+
+  /api/agents/{id}:
+    get:
+      operationId: getAgent
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses: { '200': { description: OK } }
+    put:
+      operationId: updateAgent
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
+      responses: { '200': { description: Updated } }
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Ephemeral client token (or user JWT).
+  parameters:
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, example: false }
+              error: { type: string }
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        success: { type: boolean, example: true }
+        data: { type: object }
+    ClientTokenRequest:
+      type: object
+      required: [agentId]
+      properties:
+        agentId: { type: string }
+        ttlSeconds: { type: integer, example: 600 }
+        maxCalls: { type: integer, example: 1 }
+        variables: { type: object, additionalProperties: { type: string } }
+        callerIdentity:
+          type: object
+          properties:
+            number: { type: string }
+            identifier: { type: string }
+            channel: { type: string }
+    ClientToken:
+      type: object
+      properties:
+        token: { type: string }
+        expiresAt: { type: string, format: date-time }
+    InitiateCallRequest:
+      type: object
+      required: [agentId, mobileNumber]
+      properties:
+        agentId: { type: string }
+        mobileNumber: { type: string, example: '+15551234567' }
+        variables: { type: object, additionalProperties: { type: string } }
+        identifier: { type: string }
+    CallResult:
+      type: object
+      properties:
+        sessionId: { type: string }
+        callId: { type: string }
+        status: { type: string }
+        phoneNumber: { type: string }
+    SessionInfo:
+      type: object
+      properties:
+        sessionId: { type: string }
+        websocketUrl: { type: string, example: 'wss://api.telenow.ai/ws/web-agent' }
+        status: { type: string }
+    Agent:
+      type: object
+      description: Agent config (loosely typed here; see the product docs for the full shape).
+      additionalProperties: true
+      properties:
+        name: { type: string }
+        systemPrompt: { type: string }
+        llmProvider: { type: string }
+        llmModel: { type: string }
+        sttProvider: { type: string }
+        ttsProvider: { type: string }
+        ttsVoice: { type: string }

@@ -1,0 +1,19 @@
+[package]
+name = "telenow-audio-core"
+version = "0.1.0"
+edition = "2021"
+description = "Telenow Voice SDK shared audio core: codecs, resampler, and the adaptive jitter buffer. Pure std — the single source of truth for client audio DSP, compiled to native (iOS/Android) and WASM."
+license = "MIT"
+
+[lib]
+# rlib for fast, dependency-free `cargo test`. For platform builds, add:
+#   • "cdylib" + wasm-bindgen → WASM (web)            (wasm-pack)
+#   • "cdylib" + jni           → Android (.so via JNI)
+#   • "staticlib"/"cdylib"     → iOS (C-FFI via uniffi/cbindgen)
+crate-type = ["rlib"]
+
+[dependencies]
+
+# Standalone workspace root so `cargo test` here is fully isolated from the
+# backend crate a teammate is editing.
+[workspace]
