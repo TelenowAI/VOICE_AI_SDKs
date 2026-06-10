@@ -1,6 +1,6 @@
 # @telenow/react-native
 
-Telenow voice AI SDK for React Native — real-time AI voice agent calls on iOS
+[Telenow](https://telenow.ai) voice AI SDK for React Native — real-time AI voice agent calls on iOS
 and Android. The control plane + DSP run in JS (`src/index.ts`, reusing
 `@telenow/client`'s pure modules); the native module (`ios/TelenowAudio.swift`,
 `android/.../TelenowAudioModule.kt`) does only mic capture + PCM playback in
@@ -58,3 +58,18 @@ init, so no token or slug ships in the client. The SDK also answers server
 > Key gotcha: route agent playback **through the voice-processing unit** so the
 > OS echo-canceller removes the agent's own voice from the mic (the native
 > modules already do this — keep it that way).
+
+---
+
+## What is Telenow?
+
+[**Telenow**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-mobile](https://telenow.ai/docs/sdk-mobile)

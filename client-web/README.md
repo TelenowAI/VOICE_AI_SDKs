@@ -1,6 +1,6 @@
 # @telenow/client
 
-Headless browser client for the Telenow Voice SDK. Framework-agnostic (no React).
+Headless browser client for the [Telenow](https://telenow.ai) Voice SDK. Framework-agnostic (no React).
 
 - **`TelenowCall`** — the whole call in one object: session init → WebSocket with
   auto-reconnect → mic capture → jitter-buffered playback → barge-in flush →
@@ -70,3 +70,18 @@ await capture.start();
 
 Build: `npm run build` (emits `dist/` ESM + `.d.ts`). Test: `npm test`.
 See `../RELEASING.md` to publish.
+
+---
+
+## What is Telenow?
+
+[**Telenow**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-web](https://telenow.ai/docs/sdk-web)

@@ -23,3 +23,18 @@ init, so no token or slug ships in the client. The SDK also answers server
 
 Requires the Android SDK + NDK + a device. Publish: `./gradlew publish` to your
 Maven repo (see `../RELEASING.md`).
+
+---
+
+## What is Telenow?
+
+[**[Telenow](https://telenow.ai)**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-mobile](https://telenow.ai/docs/sdk-mobile)

@@ -1,6 +1,6 @@
 {
   "name": "@telenow/react",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "React hook for Telenow voice AI — useVoiceCall() adds real-time AI voice agent calls to your app: call state, live transcripts, mute, chat messages, barge-in, auto-reconnect.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,7 +11,10 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
@@ -49,8 +52,12 @@
     "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
     "directory": "react"
   },
-  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
-  "publishConfig": { "access": "public" },
+  "bugs": {
+    "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@telenow/client": "file:../client-web",
     "@types/react": "^19.0.0",

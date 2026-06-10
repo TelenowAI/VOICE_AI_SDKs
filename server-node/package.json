@@ -1,6 +1,6 @@
 {
   "name": "@telenow/server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Telenow voice AI SDK for Node, Bun, Deno & edge — place AI agent phone calls, mint browser/app call sessions, transfer & end live calls, verify webhooks, and build custom-LLM streaming (SSE) endpoints. Zero dependencies.",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,8 +11,13 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
@@ -51,8 +56,12 @@
     "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
     "directory": "server-node"
   },
-  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
-  "publishConfig": { "access": "public" },
+  "bugs": {
+    "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "typescript": "^5.6.2"
   }

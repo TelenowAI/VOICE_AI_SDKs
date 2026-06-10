@@ -104,7 +104,7 @@ npm publish --access public      # ships dist + src + ios (podspec/bridge) + and
 cd sdk/server-python
 python -m unittest discover -s tests        # 13 tests
 python -m pip install --upgrade build twine
-python -m build                              # → dist/telenow-0.1.0-py3-none-any.whl + .tar.gz
+python -m build                              # → dist/telenow-0.1.1-py3-none-any.whl + .tar.gz
 twine check dist/*                           # metadata sanity
 twine upload dist/*                          # auth: username __token__ / password $PYPI_TOKEN
 ```
@@ -160,10 +160,10 @@ a git tag — but in a **dedicated public repo with `Package.swift` at the root*
 cd sdk/swift && swift build                      # sanity
 # one-time: create the public repo and push the swift package as its root
 git init /tmp/telenow-swift && cp -R . /tmp/telenow-swift && cd /tmp/telenow-swift
-git add -A && git commit -m "TelenowSDK v0.1.0"
+git add -A && git commit -m "TelenowSDK v0.1.1"
 git remote add origin git@github.com:MettyAI/telenow-swift.git
 git push -u origin main
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 Consumers then add `https://github.com/MettyAI/telenow-swift` in Xcode
 (*File → Add Package Dependencies*) or in `Package.swift`.

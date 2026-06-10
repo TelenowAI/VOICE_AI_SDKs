@@ -1,6 +1,6 @@
 # telenow (Python)
 
-Telenow Voice SDK backend client for Python / Django / FastAPI. Stdlib only (no `requests`).
+[Telenow](https://telenow.ai) Voice SDK backend client for Python / Django / FastAPI. Stdlib only (no `requests`).
 
 ```bash
 pip install telenow            # core
@@ -72,3 +72,18 @@ def handle(request, event):       # signature already verified
 ```
 
 Test: `python -m unittest discover tests`. Publish: see `../RELEASING.md`.
+
+---
+
+## What is Telenow?
+
+[**Telenow**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-server](https://telenow.ai/docs/sdk-server)

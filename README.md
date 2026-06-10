@@ -1,6 +1,6 @@
 # Telenow Voice SDK — packages
 
-Distributable packages so any codebase can embed Telenow voice AI. Isolated from
+Distributable packages so any codebase can embed [Telenow](https://telenow.ai) voice AI. Isolated from
 the app (`voice_ai_frontend`) and backend (`voice_ai_rust`) — these are the
 shippable artifacts, built from the same primitives.
 
@@ -43,3 +43,18 @@ See [RELEASING.md](RELEASING.md) for how to publish each one, and
 [INTEGRATION_CHECKLIST.md](INTEGRATION_CHECKLIST.md) for wiring the backend
 hand-offs (client tokens, init-call, HD audio, keep-session-warm, scale) into the
 live `voice_ai_rust`.
+
+---
+
+## What is Telenow?
+
+[**Telenow**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-overview](https://telenow.ai/docs/sdk-overview)

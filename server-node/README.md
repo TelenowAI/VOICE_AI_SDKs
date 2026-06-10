@@ -1,6 +1,6 @@
 # @telenow/server
 
-Telenow Voice SDK backend client for Node 18+ / Bun / Deno / edge runtimes.
+[Telenow](https://telenow.ai) Voice SDK backend client for Node 18+ / Bun / Deno / edge runtimes.
 Zero dependencies (global `fetch` + Web Crypto).
 
 ```bash
@@ -62,3 +62,18 @@ To transfer the caller, call `tn.calls.transfer(sessionId, to)` from your
 handler — transfer is a REST action, not an SSE event.
 
 Build: `npm run build`. Test: `npm test`. Publish: see `../RELEASING.md`.
+
+---
+
+## What is Telenow?
+
+[**Telenow**](https://telenow.ai) is a voice AI platform for building
+production-grade phone and web agents. Pick a brain from the built-in
+LLM/STT/TTS providers (or bring your own model and carrier), give the agent a
+prompt, tools, and knowledge, and put it on a phone number, your website, or
+your app. Every call comes with recordings, transcripts, analytics, warm
+transfer to humans, outbound campaigns, and webhooks.
+
+- Website: [telenow.ai](https://telenow.ai)
+- Documentation: [telenow.ai/docs](https://telenow.ai/docs)
+- This SDK's guide: [telenow.ai/docs/sdk-server](https://telenow.ai/docs/sdk-server)
