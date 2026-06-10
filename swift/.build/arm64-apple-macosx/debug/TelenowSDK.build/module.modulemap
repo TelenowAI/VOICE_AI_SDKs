@@ -1,4 +1,0 @@
-module TelenowSDK {
-    header "/Users/navinkumar/Documents/Metty_AI/voice_ai/sdk/swift/.build/arm64-apple-macosx/debug/TelenowSDK.build/TelenowSDK-Swift.h"
-    requires objc
-}

@@ -1,10 +1,9 @@
-// Telenow Voice SDK — Microphone capture engine (HD uplink).
+// Telenow Voice SDK — Microphone capture engine.
 //
-// Produces 16 kHz linear-PCM16 frames from the mic, base64-encoded and ready to
-// send over the existing WS as { event:'media', data } once the session has
-// negotiated the HD format (see README — `audioFormat:'pcm16',
-// audioSampleRate:16000` on the `start` frame). The legacy live path sends
-// μ-law 8 kHz; this is the quality lever (a).
+// Produces base64 audio frames from the mic, ready to send over the WS as
+// { event:'media', data }. Default wire format is G.711 μ-law @ 8 kHz — the
+// only uplink the current server decodes. 16 kHz linear-PCM16 ('pcm16') is the
+// HD lever (a); enable it only once the backend HD uplink (Phase C) ships.
 //
 // DSP lives in pcm.ts (pure + tested). This file is the thin browser shim:
 // getUserMedia -> AudioWorklet (ScriptProcessor fallback) -> resample -> frame
@@ -24,9 +23,10 @@ import {
 export interface CaptureOptions {
   /**
    * Wire encoding for uplink frames.
-   * - 'pcm16' (default): linear PCM16-LE — the HD lever (a), pair with 16 kHz.
-   * - 'mulaw': G.711 μ-law — legacy telephony parity, pair with 8 kHz (works
-   *   with the current unmodified server).
+   * - 'mulaw' (default): G.711 μ-law @ 8 kHz — what the server decodes today.
+   * - 'pcm16': linear PCM16-LE @ 16 kHz — the HD lever (a). Only switch once
+   *   the backend's HD uplink (integration Phase C) is deployed; the current
+   *   server treats every media frame as μ-law 8 kHz.
    */
   encoding?: 'pcm16' | 'mulaw';
   /** Target uplink rate. Default 16000 for pcm16, 8000 for mulaw. */
@@ -72,7 +72,7 @@ export class CaptureEngine {
 
   constructor(opts: CaptureOptions) {
     this.opts = opts;
-    this.encoding = opts.encoding ?? 'pcm16';
+    this.encoding = opts.encoding ?? 'mulaw';
     this.targetRate = opts.targetSampleRate ?? (this.encoding === 'mulaw' ? 8000 : 16000);
     this.frameLen = frameSamples(this.targetRate, opts.frameMs ?? 20);
   }

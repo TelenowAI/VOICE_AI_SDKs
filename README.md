@@ -7,22 +7,26 @@ shippable artifacts, built from the same primitives.
 Two buckets:
 - **Client / audio** (needs real per-platform audio I/O): web, React, React
   Native, Swift/iOS, Kotlin/Android, Flutter. Heavy parts share one Rust core.
-- **Backend / control** (just REST/WS + token mint + webhook verify): Node,
-  Python/Django, and an OpenAPI spec to generate the long tail (Kotlin, Go, Ruby,
-  PHP, C#…).
+  All expose the same `TelenowCall`-style controller: session init (public slug,
+  client token, or a **backend-minted session** — recommended), reconnect, mic
+  capture (μ-law 8 kHz default, matching the live server), jitter-buffered
+  playback, barge-in flush, transcripts, latency ping echo.
+- **Backend / control** (REST/WS + token mint + webhook verify + **Custom API
+  SSE helpers** for bring-your-own-LLM endpoints): Node, Python/Django, and an
+  OpenAPI spec to generate the long tail (Kotlin, Go, Ruby, PHP, C#…).
 
 | Package | Dir | Registry | Bucket | Status |
 |---|---|---|---|---|
-| `@telenow/client` | `client-web/` | npm | client | ✅ builds (16 tests) |
+| `@telenow/client` | `client-web/` | npm | client | ✅ builds (14 tests incl. wire protocol) |
 | `@telenow/react` | `react/` | npm | client | ✅ builds |
-| `@telenow/server` | `server-node/` | npm | backend | ✅ builds (5 tests) |
-| `telenow` (py) | `server-python/` | PyPI | backend | ✅ 6 tests |
+| `@telenow/server` | `server-node/` | npm | backend | ✅ builds (14 tests) |
+| `telenow` (py) | `server-python/` | PyPI | backend | ✅ 13 tests |
 | OpenAPI + generated clients | `openapi/` | (multi) | backend | ✅ spec |
 | `telenow-audio-core` | `audio-core/` | crates.io / native libs | client core | ✅ 11 tests |
 | `TelenowSDK` (swift) | `swift/` | SwiftPM / CocoaPods | client | ✅ builds + DSP verified |
 | `ai.telenow:sdk` | `android/` | Maven | client | 🟢 complete source |
 | `telenow` (flutter) | `flutter/` | pub.dev | client | 🟢 complete source |
-| `@telenow/react-native` | `react-native/` | npm | client | 🟢 complete source |
+| `@telenow/react-native` | `react-native/` | npm | client | ✅ packaged (dist + podspec + gradle autolink; device smoke-test pending) |
 
 ✅ = builds/tests in this repo today (Node, Rust, Python, and Swift toolchains
 were available). 🟢 = complete, idiomatic source — the DSP + jitter buffer are
@@ -30,8 +34,10 @@ ported from the verified reference and the audio I/O is fully written — but th
 toolchain to compile it (Android SDK/NDK, Flutter, an RN app) isn't present here,
 so it compiles on its own platform rather than in this repo's CI.
 
-**Naming** uses the `@telenow` / `telenow` / `ai.telenow` placeholders — swap for
-your real registry org before publishing.
+**Naming is final**: npm scope `@telenow`, PyPI `telenow`, crates.io
+`telenow-audio-core`, Swift `TelenowSDK` (public repo `MettyAI/telenow-swift`),
+Maven `ai.telenow` — register exactly these (fallbacks in RELEASING.md §1 if a
+name is taken). Public source home: `MettyAI/VOICE_AI_SDKs`.
 
 See [RELEASING.md](RELEASING.md) for how to publish each one, and
 [INTEGRATION_CHECKLIST.md](INTEGRATION_CHECKLIST.md) for wiring the backend

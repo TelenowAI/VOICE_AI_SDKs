@@ -79,13 +79,47 @@ class Telenow:
         to: str,
         variables: Optional[Dict[str, str]] = None,
         identifier: Optional[str] = None,
+        first_response: Optional[str] = None,
+        machine_detection: Optional[str] = None,  # "true" (auto-voicemail) | "hangup", Plivo only
+        call_type: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {"agentId": agent_id, "mobileNumber": to}
         if variables is not None:
             body["variables"] = variables
         if identifier is not None:
             body["identifier"] = identifier
+        if first_response is not None:
+            body["firstResponse"] = first_response
+        if machine_detection is not None:
+            body["machineDetection"] = machine_detection
+        if call_type is not None:
+            body["callType"] = call_type
+        if user_id is not None:
+            body["userId"] = user_id
         return self._request("POST", "/api/sessions/initiate-call", body)
+
+    def init_web_call(
+        self,
+        agent_id: str,
+        variables: Optional[Dict[str, str]] = None,
+        identifier: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Init a browser/app voice session server-side (init-web-call).
+
+        Hand the returned ``{"sessionId", "websocketUrl"}`` to your frontend —
+        the client SDKs accept it as a pre-initialized ``session``, so no
+        credential ever ships to the client.
+        """
+        body: Dict[str, Any] = {"agentId": agent_id}
+        if variables is not None:
+            body["variables"] = variables
+        if identifier is not None:
+            body["identifier"] = identifier
+        if user_id is not None:
+            body["userId"] = user_id
+        return self._request("POST", "/api/sessions/init-web-call", body)
 
     def transfer_call(self, session_id: str, to: str) -> Any:
         return self._request("POST", f"/api/sessions/{session_id}/transfer", {"to": to})

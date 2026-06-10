@@ -1,6 +1,6 @@
 # @telenow/react
 
-React bindings for the Telenow Voice SDK.
+React bindings for the Telenow Voice SDK — `useVoiceCall()` over `@telenow/client`.
 
 ```bash
 npm install @telenow/react @telenow/client react
@@ -9,10 +9,11 @@ npm install @telenow/react @telenow/client react
 ```tsx
 import { useVoiceCall } from '@telenow/react';
 
-function CallButton({ token }: { token: string }) {
-  const { state, transcript, muted, start, stop, mute } = useVoiceCall({
-    token,                                  // minted by your backend (@telenow/server)
-    audio: { encoding: 'pcm16', targetSampleRate: 16000, noiseSuppression: true },
+function CallButton({ session }: { session: { sessionId: string; websocketUrl: string } }) {
+  const { state, transcript, muted, start, stop, mute, sendText } = useVoiceCall({
+    // Session minted by YOUR backend (@telenow/server `calls.createWeb`) —
+    // no credential ships to the browser. Or pass `publicSlug` / `token`.
+    session,
   });
   return (
     <div>
@@ -25,5 +26,11 @@ function CallButton({ token }: { token: string }) {
   );
 }
 ```
+
+- Audio defaults to μ-law 8 kHz (what the server decodes today) with browser
+  echo cancellation + noise suppression on. Keep the defaults unless the
+  backend HD uplink (Phase C) is deployed.
+- `sendText('…', { chat: true })` sends a typed turn and asks for a text-only reply.
+- Reconnect, barge-in flush, transcripts, and the latency ping echo are automatic.
 
 Build: `npm install && npm run build`. Publish: see `../RELEASING.md`.

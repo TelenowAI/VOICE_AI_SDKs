@@ -82,7 +82,17 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
     track?.write(bytes, 0, bytes.size)
   }
 
+  // Barge-in: pause + flush discards queued audio without releasing the track.
+  @ReactMethod
+  fun clearPlayback() {
+    track?.let { it.pause(); it.flush(); it.play() }
+  }
+
   @ReactMethod fun setMuted(m: Boolean) { muted = m }
+
+  // Required by React Native's NativeEventEmitter contract (no-ops).
+  @ReactMethod fun addListener(eventName: String) {}
+  @ReactMethod fun removeListeners(count: Int) {}
 
   @ReactMethod
   fun stop() {

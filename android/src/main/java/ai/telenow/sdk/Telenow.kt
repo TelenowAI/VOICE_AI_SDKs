@@ -32,6 +32,13 @@ data class TelenowCallOptions(
     val variables: Map<String, String>? = null,
     /** "mulaw" (8 kHz, works with the current server) or "pcm16" (16 kHz HD). */
     val uplinkEncoding: String = "mulaw",
+    /**
+     * Pre-initialized session (from your backend calling init-web-call with an
+     * org API key). When both are set, the SDK skips session init entirely —
+     * no token/publicSlug needed on the device.
+     */
+    val sessionId: String? = null,
+    val websocketUrl: String? = null,
 )
 
 private const val PLAYBACK_RATE = 24000
@@ -107,6 +114,9 @@ class TelenowCall(private val options: TelenowCallOptions) {
     }
 
     private fun initSession(): Pair<String, String> {
+        if (options.sessionId != null && options.websocketUrl != null) {
+            return options.sessionId to options.websocketUrl
+        }
         val base = options.baseUrl.trimEnd('/')
         val urlStr: String
         val headers: Map<String, String>
@@ -183,6 +193,12 @@ class TelenowCall(private val options: TelenowCallOptions) {
                 val play = if (rate != PLAYBACK_RATE) Dsp.resample(pcm, rate, PLAYBACK_RATE) else pcm
                 track?.write(play, 0, play.size)
             }
+            "clear" -> { // barge-in: drop queued agent audio immediately
+                track?.let { it.pause(); it.flush(); it.play() }
+                jitter.reset()
+                clock = 0.0
+            }
+            "ping" -> ws?.send(JSONObject(mapOf("event" to "pong", "t" to m.opt("t"))).toString())
             "transcript" -> onTranscript?.invoke(m.optString("role"), m.optString("text"))
             "session_end" -> stop()
         }
@@ -233,7 +249,13 @@ class TelenowCall(private val options: TelenowCallOptions) {
                 } else {
                     ByteArray(chunk.size) { Dsp.linear16ToMulawByte(chunk[it]) }
                 }
-                ws?.send(Base64.encodeToString(data, Base64.NO_WRAP))
+                // The server only accepts JSON media envelopes; a bare base64
+                // text frame is silently dropped by web_stream's parser.
+                ws?.send(
+                    JSONObject(
+                        mapOf("event" to "media", "data" to Base64.encodeToString(data, Base64.NO_WRAP)),
+                    ).toString(),
+                )
             }
         }
     }

@@ -28,12 +28,20 @@ class TelenowCallOptions {
   /// 'mulaw' (8 kHz, works with the current server) or 'pcm16' (16 kHz HD).
   final String uplinkEncoding;
 
+  /// Pre-initialized session (your backend called init-web-call with an org
+  /// API key). When both are set the SDK skips session init — no token or
+  /// publicSlug needed on the device.
+  final String? sessionId;
+  final String? websocketUrl;
+
   const TelenowCallOptions({
     this.token,
     this.publicSlug,
     this.baseUrl = 'https://api.telenow.ai',
     this.variables,
     this.uplinkEncoding = 'mulaw',
+    this.sessionId,
+    this.websocketUrl,
   });
 }
 
@@ -115,6 +123,9 @@ class Telenow {
   }
 
   Future<(String, String)> _initSession() async {
+    final preSession = options.sessionId;
+    final preWsUrl = options.websocketUrl;
+    if (preSession != null && preWsUrl != null) return (preSession, preWsUrl);
     final base = options.baseUrl.endsWith('/')
         ? options.baseUrl.substring(0, options.baseUrl.length - 1)
         : options.baseUrl;
@@ -130,7 +141,11 @@ class Telenow {
     req.add(utf8.encode(jsonEncode({'variables': options.variables ?? {}})));
     final resp = await req.close();
     final body = await resp.transform(utf8.decoder).join();
-    final data = (jsonDecode(body) as Map)['data'] as Map;
+    final env = jsonDecode(body) as Map;
+    final data = env['data'];
+    if (env['success'] != true || data is! Map) {
+      throw StateError('session init failed: ${env['error'] ?? 'HTTP ${resp.statusCode}'}');
+    }
     return (data['sessionId'] as String, data['websocketUrl'] as String);
   }
 
@@ -186,6 +201,15 @@ class Telenow {
         _clock = _clock > d.startAt ? _clock : d.startAt;
         final play = rate != 24000 ? Dsp.resample(pcm, rate, 24000) : pcm;
         _audio.invokeMethod('playPcm', {'data': Dsp.shortsToLe16(play), 'rate': 24000});
+        break;
+      case 'clear': // barge-in: drop queued agent audio immediately
+        _clock = 0;
+        _jitter.reset();
+        // Optional native method — older plugin builds may not implement it.
+        _audio.invokeMethod('clearPlayback').catchError((_) {});
+        break;
+      case 'ping': // echo for server-measured RTT (latency breakdown)
+        _ws?.add(jsonEncode({'event': 'pong', 't': m['t']}));
         break;
       case 'transcript':
         _transcript.add({

@@ -1,24 +1,26 @@
-// @telenow/react — useVoiceCall hook over @telenow/client, with auto-reconnect.
+// @telenow/react — useVoiceCall hook: React state bindings over the
+// framework-agnostic TelenowCall controller from @telenow/client.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  CaptureEngine,
-  PlaybackEngine,
-  ReconnectingSocket,
-  type MediaFrame,
-  type SocketState,
+  TelenowCall,
+  type CallState,
+  type ReconnectPolicy,
+  type TelenowSession,
+  type TranscriptLine,
 } from '@telenow/client';
 
-export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error';
-
-export interface TranscriptLine {
-  role: string;
-  text: string;
-  isFinal: boolean;
-}
+export type { CallState, TranscriptLine, TelenowSession };
 
 export interface UseVoiceCallOptions {
+  /** Ephemeral client token (Authorization: Bearer) for init-web-call. */
   token?: string;
+  /** Published-agent slug for the public widget session (no auth). */
   publicSlug?: string;
+  /**
+   * Session pre-initialized by YOUR backend with its org API key (server SDK
+   * `calls.createWeb`) — skips init in the browser, no credential shipped.
+   */
+  session?: TelenowSession;
   baseUrl?: string;
   variables?: Record<string, string>;
   audio?: {
@@ -29,12 +31,7 @@ export interface UseVoiceCallOptions {
     autoGainControl?: boolean;
   };
   /** Reconnect tuning: maxAttempts, baseDelayMs, maxDelayMs, jitter. */
-  reconnect?: { maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number; jitter?: number };
-}
-
-interface SessionInfo {
-  sessionId: string;
-  websocketUrl: string;
+  reconnect?: ReconnectPolicy;
 }
 
 export function useVoiceCall(opts: UseVoiceCallOptions) {
@@ -43,136 +40,53 @@ export function useVoiceCall(opts: UseVoiceCallOptions) {
   const [muted, setMutedState] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ctxRef = useRef<AudioContext | null>(null);
-  const captureRef = useRef<CaptureEngine | null>(null);
-  const playbackRef = useRef<PlaybackEngine | null>(null);
-  const socketRef = useRef<ReconnectingSocket | null>(null);
-  const endedRef = useRef(false);
-
-  const teardown = useCallback((finalState: CallState) => {
-    if (endedRef.current) return;
-    endedRef.current = true;
-    captureRef.current?.stop();
-    playbackRef.current?.close();
-    void ctxRef.current?.close();
-    captureRef.current = null;
-    playbackRef.current = null;
-    ctxRef.current = null;
-    socketRef.current = null;
-    setState((s) => (s === 'error' ? s : finalState));
-  }, []);
+  const callRef = useRef<TelenowCall | null>(null);
+  const optsRef = useRef(opts);
+  optsRef.current = opts;
 
   const stop = useCallback(() => {
-    const sock = socketRef.current;
-    if (sock) sock.close(); // → onState('closed') → teardown
-    else teardown('ended');
-  }, [teardown]);
-
-  const handleMessage = useCallback(
-    (data: string) => {
-      let m: Record<string, unknown>;
-      try {
-        m = JSON.parse(data) as Record<string, unknown>;
-      } catch {
-        return;
-      }
-      const ev = m.event as string | undefined;
-      if (ev === 'media' && typeof m.data === 'string') {
-        const frame: MediaFrame = {
-          data: m.data,
-          format: (m.format as MediaFrame['format']) ?? 'mulaw',
-          sampleRate: (m.sampleRate as number | undefined) ?? 8000,
-        };
-        playbackRef.current?.push(frame);
-      } else if (ev === 'clear') {
-        playbackRef.current?.clear();
-      } else if (ev === 'transcript') {
-        setTranscript((t) => [
-          ...t,
-          { role: String(m.role), text: String(m.text), isFinal: Boolean(m.isFinal) },
-        ]);
-      } else if (ev === 'session_end') {
-        stop();
-      }
-    },
-    [stop],
-  );
-
-  const initSession = useCallback(async (): Promise<SessionInfo> => {
-    const base = (opts.baseUrl ?? '').replace(/\/+$/, '');
-    const url = opts.publicSlug
-      ? `${base}/api/public/widget/${encodeURIComponent(opts.publicSlug)}/session`
-      : `${base}/api/sessions/init-web-call`;
-    const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (!opts.publicSlug && opts.token) headers.authorization = `Bearer ${opts.token}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ variables: opts.variables }),
-    });
-    const j = (await res.json()) as { success?: boolean; data?: SessionInfo; error?: string };
-    if (!j.success || !j.data) throw new Error(j.error ?? 'session init failed');
-    return j.data;
-  }, [opts.baseUrl, opts.publicSlug, opts.token, opts.variables]);
+    callRef.current?.stop();
+  }, []);
 
   const start = useCallback(async () => {
-    endedRef.current = false;
+    const active = callRef.current?.state;
+    if (active === 'connecting' || active === 'live' || active === 'reconnecting') return;
     setError(null);
     setTranscript([]);
-    setState('connecting');
+    setMutedState(false);
+    const o = optsRef.current;
+    const call = new TelenowCall({
+      token: o.token,
+      publicSlug: o.publicSlug,
+      session: o.session,
+      baseUrl: o.baseUrl,
+      variables: o.variables,
+      audio: o.audio,
+      reconnect: o.reconnect,
+      onState: setState,
+      onTranscript: (line) => setTranscript((t) => [...t, line]),
+      onError: setError,
+    });
+    callRef.current = call;
     try {
-      const sess = await initSession();
-      const ctx = new AudioContext();
-      await ctx.resume();
-      ctxRef.current = ctx;
-      playbackRef.current = new PlaybackEngine(ctx);
-
-      const socket = new ReconnectingSocket({
-        url: sess.websocketUrl,
-        hello: () => JSON.stringify({ event: 'start', sessionId: sess.sessionId }),
-        onMessage: handleMessage,
-        policy: opts.reconnect,
-        onState: (s: SocketState) => {
-          if (s === 'open') {
-            playbackRef.current?.clear(); // reset the jitter buffer after a (re)connect
-            setState('live');
-          } else if (s === 'reconnecting') {
-            setState('reconnecting');
-          } else if (s === 'connecting') {
-            setState('connecting');
-          } else if (s === 'closed') {
-            teardown('ended');
-          }
-        },
-      });
-      socketRef.current = socket;
-      socket.open();
-
-      const capture = new CaptureEngine({
-        encoding: opts.audio?.encoding ?? 'mulaw',
-        targetSampleRate: opts.audio?.targetSampleRate,
-        echoCancellation: opts.audio?.echoCancellation,
-        noiseSuppression: opts.audio?.noiseSuppression,
-        autoGainControl: opts.audio?.autoGainControl,
-        onFrame: (b64) => {
-          socketRef.current?.send(JSON.stringify({ event: 'media', data: b64 }));
-        },
-      });
-      captureRef.current = capture;
-      await capture.start();
-    } catch (err) {
-      setError((err as Error).message);
-      setState('error');
-      teardown('ended');
+      await call.start();
+    } catch {
+      // state/error already surfaced via callbacks
     }
-  }, [initSession, handleMessage, teardown, opts.audio, opts.reconnect]);
+  }, []);
 
   const mute = useCallback((m: boolean) => {
-    captureRef.current?.setMuted(m);
+    callRef.current?.setMuted(m);
     setMutedState(m);
   }, []);
 
+  /** Send a typed user message; { chat: true } asks for a text-only reply. */
+  const sendText = useCallback(
+    (text: string, o?: { chat?: boolean }): boolean => callRef.current?.sendText(text, o) ?? false,
+    [],
+  );
+
   useEffect(() => () => stop(), [stop]);
 
-  return { state, transcript, muted, error, start, stop, mute };
+  return { state, transcript, muted, error, start, stop, mute, sendText };
 }

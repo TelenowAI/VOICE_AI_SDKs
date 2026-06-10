@@ -2,8 +2,14 @@
 name = "telenow-audio-core"
 version = "0.1.0"
 edition = "2021"
-description = "Telenow Voice SDK shared audio core: codecs, resampler, and the adaptive jitter buffer. Pure std — the single source of truth for client audio DSP, compiled to native (iOS/Android) and WASM."
+description = "Real-time voice DSP for the Telenow voice AI SDK — G.711 μ-law codec, linear resampler, RFC 3550-style adaptive jitter buffer, RMS metering. Pure std, no unsafe, no dependencies."
 license = "MIT"
+homepage = "https://telenow.ai"
+documentation = "https://telenow.ai/docs/sdk-overview"
+repository = "https://github.com/MettyAI/VOICE_AI_SDKs"
+readme = "README.md"
+keywords = ["audio", "dsp", "jitter-buffer", "voip", "g711"]
+categories = ["multimedia::audio", "network-programming"]
 
 [lib]
 # rlib for fast, dependency-free `cargo test`. For platform builds, add:

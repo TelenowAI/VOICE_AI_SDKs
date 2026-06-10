@@ -1,16 +1,72 @@
 {
   "name": "@telenow/react-native",
   "version": "0.1.0",
-  "description": "Telenow Voice SDK for React Native (iOS + Android). Native audio I/O over the shared Rust core.",
-  "main": "src/index.ts",
-  "files": ["src", "android", "ios", "telenow-react-native.podspec", "README.md"],
-  "dependencies": {
-    "@telenow/client": "^0.1.0"
+  "description": "Telenow voice AI SDK for React Native — real-time AI voice agent calls on iOS & Android: native voice-communication audio (hardware echo cancellation), live transcripts, barge-in, auto-reconnect.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "react-native": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "react-native": "./src/index.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "android",
+    "ios",
+    "telenow-react-native.podspec",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "peerDependencies": {
-    "react": "*",
-    "react-native": "*"
+    "@telenow/client": "^0.1.0",
+    "react": ">=18",
+    "react-native": ">=0.71"
   },
-  "keywords": ["voice", "ai", "react-native", "telenow"],
-  "license": "MIT"
+  "devDependencies": {
+    "@telenow/client": "file:../client-web",
+    "typescript": "^5.6.2"
+  },
+  "keywords": [
+    "react-native",
+    "ios",
+    "android",
+    "mobile",
+    "native-module",
+    "voice-ai",
+    "ai-voice-agent",
+    "voice-agent",
+    "conversational-ai",
+    "voice-assistant",
+    "voice-bot",
+    "ai-call",
+    "call-automation",
+    "telephony",
+    "speech-to-text",
+    "text-to-speech",
+    "stt",
+    "tts",
+    "real-time",
+    "voice-sdk",
+    "telenow"
+  ],
+  "license": "MIT",
+  "author": "Telenow (https://telenow.ai)",
+  "homepage": "https://telenow.ai/docs/sdk-mobile",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
+    "directory": "react-native"
+  },
+  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
+  "publishConfig": { "access": "public" }
 }

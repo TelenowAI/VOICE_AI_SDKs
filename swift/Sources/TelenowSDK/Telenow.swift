@@ -17,18 +17,27 @@ public struct TelenowCallOptions {
     public var baseURL: String
     public var variables: [String: String]?
     public var uplinkEncoding: String
+    /// Pre-initialized session (your backend called init-web-call with an org
+    /// API key). When both are set the SDK skips session init — no token or
+    /// publicSlug needed on the device.
+    public var sessionId: String?
+    public var websocketUrl: String?
     public init(
         token: String? = nil,
         publicSlug: String? = nil,
         baseURL: String = "https://api.telenow.ai",
         variables: [String: String]? = nil,
-        uplinkEncoding: String = "mulaw"
+        uplinkEncoding: String = "mulaw",
+        sessionId: String? = nil,
+        websocketUrl: String? = nil
     ) {
         self.token = token
         self.publicSlug = publicSlug
         self.baseURL = baseURL
         self.variables = variables
         self.uplinkEncoding = uplinkEncoding
+        self.sessionId = sessionId
+        self.websocketUrl = websocketUrl
     }
 }
 
@@ -103,6 +112,9 @@ public final class TelenowCall {
 
     // MARK: - Session init
     private func initSession() async throws -> SessionInfo {
+        if let sid = options.sessionId, let wsUrl = options.websocketUrl {
+            return SessionInfo(sessionId: sid, websocketUrl: wsUrl)
+        }
         let base = options.baseURL.hasSuffix("/") ? String(options.baseURL.dropLast()) : options.baseURL
         var request: URLRequest
         let body = try JSONSerialization.data(withJSONObject: ["variables": options.variables ?? [:]])
@@ -192,6 +204,15 @@ public final class TelenowCall {
             #if os(iOS)
             enqueue(pcm: pcm, rate: rate)
             #endif
+        case "clear": // barge-in: drop queued agent audio immediately
+            clock = 0
+            jitter.reset()
+            #if os(iOS)
+            player.stop()
+            player.play()
+            #endif
+        case "ping": // echo for server-measured RTT (latency breakdown)
+            sendJSON(["event": "pong", "t": m["t"] ?? 0])
         case "transcript":
             onTranscript?((m["role"] as? String) ?? "", (m["text"] as? String) ?? "")
         case "session_end":

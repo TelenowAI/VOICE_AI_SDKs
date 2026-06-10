@@ -13,6 +13,15 @@ swift build      # compiles the library (macOS + iOS targets)
 swift test       # DSP + jitter tests (needs Xcode's XCTest; runs in CI)
 ```
 
+## Using a backend-minted session (recommended)
+
+Have YOUR backend call init-web-call with its org API key (`@telenow/server`
+`calls.createWeb` / Python `init_web_call`) and hand the resulting
+`sessionId` + `websocketUrl` to the app — the SDK then skips on-device session
+init, so no token or slug ships in the client. The SDK also answers server
+`ping` events (powers the latency breakdown) and flushes queued agent audio on
+`clear` (barge-in).
+
 ## Remaining for production
 - Exercise the `AVAudioEngine` mic-tap + player path on a real iOS device (audio
   can't be verified headlessly).

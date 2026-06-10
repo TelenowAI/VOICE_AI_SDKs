@@ -2,8 +2,26 @@
 //
 // Zero runtime dependencies: uses the global `fetch` and Web Crypto (both
 // available in Node 18+, Bun, Deno, Cloudflare Workers). Mint short-lived client
-// tokens for browsers/apps, place + transfer calls, manage agents, and verify
-// inbound webhook signatures.
+// tokens for browsers/apps, place + transfer calls, manage agents, verify
+// inbound webhook signatures, and build Custom API (custom-LLM) SSE endpoints.
+
+export {
+  callEnd,
+  customApiFetchHandler,
+  customApiNodeHandler,
+  customApiStream,
+  sseEncode,
+  SSE_DONE,
+  SSE_HEADERS,
+} from './customApi.js';
+export type {
+  CustomApiEvent,
+  CustomApiHandler,
+  CustomApiRequest,
+  CustomApiYield,
+  NodeRequestLike,
+  NodeResponseLike,
+} from './customApi.js';
 
 export interface TelenowOptions {
   /** Org API key (X-API-Key). Keep this server-side — never ship it to a client. */
@@ -36,12 +54,35 @@ export interface CreateCallRequest {
   to: string;
   variables?: Record<string, string>;
   identifier?: string;
+  /** Override the agent's opening line for this call. */
+  firstResponse?: string;
+  /** Answering-machine detection: 'true' = auto-voicemail, 'hangup' = hang up (Plivo only). */
+  machineDetection?: 'true' | 'hangup';
+  callType?: string;
+  userId?: string;
 }
 export interface CallResult {
   sessionId: string;
   callId?: string;
   status?: string;
   phoneNumber?: string;
+}
+
+export interface InitWebCallRequest {
+  agentId: string;
+  variables?: Record<string, string>;
+  /** Trusted caller identifier, injected into tool calls when the agent opts in. */
+  identifier?: string;
+  userId?: string;
+}
+/**
+ * Hand this to the browser/app: the client SDKs accept it as `session` and
+ * connect straight to `websocketUrl` — no credential ever ships to the client.
+ */
+export interface WebCallSession {
+  sessionId: string;
+  websocketUrl: string;
+  status?: string;
 }
 
 export class TelenowError extends Error {
@@ -108,6 +149,21 @@ export class Telenow {
         mobileNumber: r.to,
         variables: r.variables,
         identifier: r.identifier,
+        firstResponse: r.firstResponse,
+        machineDetection: r.machineDetection,
+        callType: r.callType,
+        userId: r.userId,
+      }),
+    /**
+     * Init a browser/app voice session server-side (init-web-call) and hand the
+     * returned `{ sessionId, websocketUrl }` to your frontend as `session`.
+     */
+    createWeb: (r: InitWebCallRequest): Promise<WebCallSession> =>
+      this.req<WebCallSession>('POST', '/api/sessions/init-web-call', {
+        agentId: r.agentId,
+        variables: r.variables,
+        identifier: r.identifier,
+        userId: r.userId,
       }),
     transfer: (sessionId: string, to: string): Promise<unknown> =>
       this.req('POST', `/api/sessions/${encodeURIComponent(sessionId)}/transfer`, { to }),

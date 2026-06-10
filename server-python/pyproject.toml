@@ -5,11 +5,51 @@ build-backend = "hatchling.build"
 [project]
 name = "telenow"
 version = "0.1.0"
-description = "Telenow Voice SDK — Python backend client: mint client tokens, place/transfer calls, manage agents, verify webhooks."
+description = "Telenow voice AI SDK for Python — place AI agent phone calls, mint browser/app call sessions, transfer & end live calls, verify webhooks, and stream your own LLM into calls (FastAPI/Django SSE helpers). Stdlib only."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-keywords = ["voice", "ai", "telenow", "webhooks"]
+authors = [{ name = "Telenow" }]
+keywords = [
+    "voice ai",
+    "ai voice agent",
+    "voice agent",
+    "conversational ai",
+    "voice assistant",
+    "voice bot",
+    "ai phone call",
+    "outbound calls",
+    "call automation",
+    "call center",
+    "ivr",
+    "telephony",
+    "speech to text",
+    "text to speech",
+    "stt",
+    "tts",
+    "ai agent",
+    "custom llm",
+    "sse",
+    "webhooks",
+    "telenow",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Telephony",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: Django",
+    "Typing :: Typed",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -17,6 +57,9 @@ django = ["django>=3.2"]
 
 [project.urls]
 Homepage = "https://telenow.ai"
+Documentation = "https://telenow.ai/docs/sdk-server"
+Source = "https://github.com/MettyAI/VOICE_AI_SDKs"
+Issues = "https://github.com/MettyAI/VOICE_AI_SDKs/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["telenow"]

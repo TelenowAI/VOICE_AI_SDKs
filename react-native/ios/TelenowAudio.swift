@@ -19,6 +19,12 @@ class TelenowAudio: RCTEventEmitter {
     engine.connect(player, to: engine.mainMixerNode, format: nil)
   }
 
+  // Barge-in: AVAudioPlayerNode.stop() discards every scheduled buffer.
+  @objc func clearPlayback() {
+    player.stop()
+    player.play()
+  }
+
   @objc(startCapture:)
   func startCapture(_ rate: NSNumber) {
     captureRate = rate.doubleValue

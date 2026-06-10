@@ -12,8 +12,8 @@ yet.** Publishing is irreversible (a version can't be reused), so always
 | `@telenow/react` | npm | ✅ builds (publish **after** `@telenow/client`) |
 | `telenow` | PyPI | ✅ tests pass |
 | `telenow-audio-core` | crates.io | ✅ tests pass |
-| `@telenow/react-native` | npm | ⚠️ JS ships; add `ios` podspec + `android/build.gradle` for native autolinking |
-| `TelenowSDK` | SwiftPM | ✅ via git tag · CocoaPods needs a `.podspec` |
+| `@telenow/react-native` | npm | ✅ packaged (dist build + podspec + gradle autolink); smoke-test in a real RN app before tagging stable |
+| `TelenowSDK` | SwiftPM | ✅ via git tag in its **own public repo** (Package.swift must be at the repo ROOT — see §8) · CocoaPods optional |
 | `ai.telenow:sdk` | Maven | ⚠️ build the Rust core to `.so` (cargo-ndk) + AAR first |
 | `telenow` (Flutter) | pub.dev | ⚠️ add the native plugin impl (`android/`,`ios/`) first |
 
@@ -27,9 +27,17 @@ yet.** Publishing is irreversible (a version can't be reused), so always
 | **CocoaPods** | `pod trunk register <email>` (SwiftPM needs only a git tag) |
 | **pub.dev** | a Google account with publish rights |
 
-> **Replace the placeholders** before the first publish: `@telenow` (npm),
-> `telenow` (PyPI/pub), `telenow-*` (crates), `ai.telenow` (Maven), `TelenowSDK`
-> (Swift). Whatever you register, update the manifests to match.
+> **Names are FINAL** (they match the telenow.ai brand) — register exactly
+> these: npm org **`@telenow`**, PyPI project **`telenow`**, crate
+> **`telenow-audio-core`**, Swift **`TelenowSDK`**, Maven **`ai.telenow`**.
+> If a registry name is already taken, fall back to `@telenow-ai` (npm) /
+> `telenow-sdk` (PyPI) and update the manifests + docs branch to match.
+
+### 1.5 Public repos to create (metadata already points at them)
+| Repo | Contents | Why |
+|---|---|---|
+| `MettyAI/VOICE_AI_SDKs` (public) | a copy/subtree of `voice_ai/sdk/` | npm `repository`/`bugs` links, PyPI/crates `Source` links, the RN podspec `s.source`, provenance |
+| `MettyAI/telenow-swift` (public) | `sdk/swift/` contents with `Package.swift` at the repo **root** | SwiftPM can only consume a package whose manifest is at the repo root |
 
 ## 2. Versioning
 - **SemVer** everywhere. Pre-1.0 (`0.x`) lets you iterate; breaking → bump minor.
@@ -79,9 +87,9 @@ npm publish --access public
 cd ../react && npm install && npm run build
 npm publish --access public
 
-# 4) @telenow/react-native  (after @telenow/client; ships TS source)
-cd ../react-native
-npm publish --access public      # ⚠️ add ios/*.podspec + android/build.gradle first for native autolinking
+# 4) @telenow/react-native  (after @telenow/client; autolink packaging included)
+cd ../react-native && npm install && npm run build
+npm publish --access public      # ships dist + src + ios (podspec/bridge) + android (gradle/package)
 ```
 - `--access public` is required the first time for a scoped package (the
   `publishConfig.access:"public"` in each manifest also covers this).
@@ -94,7 +102,7 @@ npm publish --access public      # ⚠️ add ios/*.podspec + android/build.grad
 ## 5. PyPI — `telenow`
 ```bash
 cd sdk/server-python
-python -m unittest discover -s tests        # 6 tests
+python -m unittest discover -s tests        # 13 tests
 python -m pip install --upgrade build twine
 python -m build                              # → dist/telenow-0.1.0-py3-none-any.whl + .tar.gz
 twine check dist/*                           # metadata sanity
@@ -146,12 +154,19 @@ repository at `https://maven.pkg.github.com/<org>/<repo>` with a `GITHUB_TOKEN`;
 
 ## 8. Swift — `TelenowSDK` (SwiftPM + optional CocoaPods)
 The package is **pure Swift** (no binary dependency), so SwiftPM publishing is
-just a git tag:
+a git tag — but in a **dedicated public repo with `Package.swift` at the root**
+(SwiftPM cannot consume a subdirectory of a monorepo):
 ```bash
-cd sdk/swift && swift build         # sanity
-git tag swift-v0.1.0 && git push origin swift-v0.1.0
+cd sdk/swift && swift build                      # sanity
+# one-time: create the public repo and push the swift package as its root
+git init /tmp/telenow-swift && cp -R . /tmp/telenow-swift && cd /tmp/telenow-swift
+git add -A && git commit -m "TelenowSDK v0.1.0"
+git remote add origin git@github.com:MettyAI/telenow-swift.git
+git push -u origin main
+git tag v0.1.0 && git push origin v0.1.0
 ```
-Consumers add the repo URL + version in Xcode / `Package.swift`.
+Consumers then add `https://github.com/MettyAI/telenow-swift` in Xcode
+(*File → Add Package Dependencies*) or in `Package.swift`.
 
 **CocoaPods (optional):** create `TelenowSDK.podspec` (name, version, source git
 tag, `source_files = "Sources/**/*.swift"`, platforms), then:
@@ -213,3 +228,20 @@ Gate every job on `bash sdk/test-all.sh` passing first.
 - [ ] Tests green (`bash sdk/test-all.sh`).
 - [ ] Publish **order** respected (`@telenow/client` before react/react-native; crate deps before dependents).
 - [ ] 2FA / signing / OIDC configured.
+
+## 12. After ALL packages are live — ship the public docs
+The customer-facing SDK documentation lives on the **`feat/sdk-docs`** branch of
+`MettyAI/voice-frontend` (new `/docs` section: sdk-overview, sdk-web,
+sdk-server, sdk-mobile + updated FAQ/api-overview answers). It is held back so
+the live docs never advertise packages that aren't installable yet.
+
+```bash
+# only once every registry above has the packages live:
+git checkout main && git pull
+git merge --no-ff feat/sdk-docs
+git push origin main          # then deploy the frontend as usual
+```
+
+If the final registry names differ from the `@telenow`/`telenow`/`ai.telenow`
+placeholders, update the install commands on the branch **before** merging
+(`src/docs/content/sdk-*.md`).

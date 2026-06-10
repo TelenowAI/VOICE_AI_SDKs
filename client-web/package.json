@@ -1,7 +1,7 @@
 {
   "name": "@telenow/client",
   "version": "0.1.0",
-  "description": "Telenow Voice SDK — headless browser client: HD (16 kHz) mic capture, adaptive jitter buffer, μ-law/PCM codecs. Framework-agnostic.",
+  "description": "Telenow voice AI SDK for the browser — add real-time AI voice agent calls to any web app: mic capture, echo & noise suppression, adaptive jitter buffer, barge-in, auto-reconnect, live transcripts. Framework-agnostic, zero dependencies.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -20,8 +20,41 @@
     "test": "npm run build && node --test",
     "prepublishOnly": "npm run clean && npm run build"
   },
-  "keywords": ["voice", "ai", "voice-ai", "websocket", "telephony", "jitter-buffer", "telenow"],
+  "keywords": [
+    "voice-ai",
+    "ai-voice-agent",
+    "voice-agent",
+    "conversational-ai",
+    "voice-assistant",
+    "voice-bot",
+    "ai-call",
+    "call-automation",
+    "call-center",
+    "ivr",
+    "telephony",
+    "speech-to-text",
+    "text-to-speech",
+    "stt",
+    "tts",
+    "real-time",
+    "websocket",
+    "audio-streaming",
+    "microphone",
+    "jitter-buffer",
+    "barge-in",
+    "web-audio",
+    "voice-sdk",
+    "telenow"
+  ],
   "license": "MIT",
+  "author": "Telenow (https://telenow.ai)",
+  "homepage": "https://telenow.ai/docs/sdk-web",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
+    "directory": "client-web"
+  },
+  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
   "publishConfig": { "access": "public" },
   "devDependencies": {
     "typescript": "^5.6.2"

@@ -1,7 +1,7 @@
 {
   "name": "@telenow/react",
   "version": "0.1.0",
-  "description": "React bindings for the Telenow Voice SDK — useVoiceCall() over @telenow/client.",
+  "description": "React hook for Telenow voice AI — useVoiceCall() adds real-time AI voice agent calls to your app: call state, live transcripts, mute, chat messages, barge-in, auto-reconnect.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,8 +21,35 @@
     "@telenow/client": "^0.1.0",
     "react": ">=18"
   },
-  "keywords": ["voice", "ai", "react", "hook", "telenow"],
+  "keywords": [
+    "react",
+    "react-hooks",
+    "voice-ai",
+    "ai-voice-agent",
+    "voice-agent",
+    "conversational-ai",
+    "voice-assistant",
+    "voice-bot",
+    "ai-call",
+    "call-automation",
+    "telephony",
+    "speech-to-text",
+    "text-to-speech",
+    "stt",
+    "tts",
+    "real-time",
+    "voice-sdk",
+    "telenow"
+  ],
   "license": "MIT",
+  "author": "Telenow (https://telenow.ai)",
+  "homepage": "https://telenow.ai/docs/sdk-web",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
+    "directory": "react"
+  },
+  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
   "publishConfig": { "access": "public" },
   "devDependencies": {
     "@telenow/client": "file:../client-web",

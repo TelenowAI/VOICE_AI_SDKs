@@ -25,6 +25,11 @@ export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended
 export interface TelenowCallOptions {
   token?: string;
   publicSlug?: string;
+  /**
+   * Pre-initialized session (your backend called init-web-call with an org
+   * API key) — skips session init, no token/publicSlug needed on the device.
+   */
+  session?: { sessionId: string; websocketUrl: string };
   baseUrl?: string;
   variables?: Record<string, string>;
   uplinkEncoding?: 'pcm16' | 'mulaw';
@@ -101,6 +106,7 @@ export class TelenowCall {
   }
 
   private async initSession(): Promise<{ sessionId: string; websocketUrl: string }> {
+    if (this.opts.session) return this.opts.session;
     const base = (this.opts.baseUrl ?? '').replace(/\/+$/, '');
     const url = this.opts.publicSlug
       ? `${base}/api/public/widget/${this.opts.publicSlug}/session`
@@ -132,6 +138,14 @@ export class TelenowCall {
       const d = this.jitter.schedule(this.clock, pcm.length / rate, this.clock);
       this.clock = Math.max(this.clock, d.startAt);
       Native.playPcm(bytesToBase64(int16ToLEBytes(pcm)), rate);
+    } else if (m.event === 'clear') {
+      // Barge-in: drop queued agent audio immediately.
+      this.clock = 0;
+      this.jitter.reset();
+      Native.clearPlayback?.();
+    } else if (m.event === 'ping') {
+      // Echo for server-measured RTT (latency breakdown).
+      this.socket?.send(JSON.stringify({ event: 'pong', t: m.t }));
     } else if (m.event === 'transcript') {
       this.onTranscript?.(String(m.role), String(m.text));
     } else if (m.event === 'session_end') {

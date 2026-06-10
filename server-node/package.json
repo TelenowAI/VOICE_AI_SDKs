@@ -1,7 +1,7 @@
 {
   "name": "@telenow/server",
   "version": "0.1.0",
-  "description": "Telenow Voice SDK — backend client: mint client tokens, place/transfer calls, manage agents, verify webhooks. Zero deps, runtime-agnostic.",
+  "description": "Telenow voice AI SDK for Node, Bun, Deno & edge — place AI agent phone calls, mint browser/app call sessions, transfer & end live calls, verify webhooks, and build custom-LLM streaming (SSE) endpoints. Zero dependencies.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,8 +19,39 @@
     "test": "node --test",
     "prepublishOnly": "npm run clean && npm run build"
   },
-  "keywords": ["voice", "ai", "telenow", "webhooks", "backend", "tokens"],
+  "keywords": [
+    "voice-ai",
+    "ai-voice-agent",
+    "voice-agent",
+    "ai-phone-call",
+    "outbound-calls",
+    "call-automation",
+    "call-center",
+    "conversational-ai",
+    "voice-bot",
+    "telephony",
+    "ai-agent",
+    "llm",
+    "custom-llm",
+    "sse",
+    "server-sent-events",
+    "webhooks",
+    "api-client",
+    "nodejs",
+    "bun",
+    "deno",
+    "cloudflare-workers",
+    "telenow"
+  ],
   "license": "MIT",
+  "author": "Telenow (https://telenow.ai)",
+  "homepage": "https://telenow.ai/docs/sdk-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
+    "directory": "server-node"
+  },
+  "bugs": { "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues" },
   "publishConfig": { "access": "public" },
   "devDependencies": {
     "typescript": "^5.6.2"

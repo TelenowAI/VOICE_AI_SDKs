@@ -97,6 +97,10 @@ paths:
               properties:
                 agentId: { type: string }
                 variables: { type: object, additionalProperties: { type: string } }
+                identifier:
+                  type: string
+                  description: Trusted caller identifier, injected into tool calls when the agent opts in.
+                userId: { type: string, format: uuid }
       responses:
         '200':
           description: Session ready
@@ -226,6 +230,15 @@ components:
         mobileNumber: { type: string, example: '+15551234567' }
         variables: { type: object, additionalProperties: { type: string } }
         identifier: { type: string }
+        firstResponse:
+          type: string
+          description: Override the agent's opening line for this call.
+        machineDetection:
+          type: string
+          enum: ['true', 'hangup']
+          description: Answering-machine detection (Plivo only).
+        callType: { type: string }
+        userId: { type: string, format: uuid }
     CallResult:
       type: object
       properties:
