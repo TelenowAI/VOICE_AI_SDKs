@@ -231,7 +231,7 @@ Gate every job on `bash sdk/test-all.sh` passing first.
 
 ## 12. After ALL packages are live — ship the public docs
 The customer-facing SDK documentation lives on the **`feat/sdk-docs`** branch of
-`MettyAI/voice-frontend` (new `/docs` section: sdk-overview, sdk-web,
+`TelenowAI/voice-frontend` (new `/docs` section: sdk-overview, sdk-web,
 sdk-server, sdk-mobile + updated FAQ/api-overview answers). It is held back so
 the live docs never advertise packages that aren't installable yet.
 
