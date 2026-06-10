@@ -58,8 +58,8 @@ django = ["django>=3.2"]
 [project.urls]
 Homepage = "https://telenow.ai"
 Documentation = "https://telenow.ai/docs/sdk-server"
-Source = "https://github.com/MettyAI/VOICE_AI_SDKs"
-Issues = "https://github.com/MettyAI/VOICE_AI_SDKs/issues"
+Source = "https://github.com/TelenowAI/VOICE_AI_SDKs"
+Issues = "https://github.com/TelenowAI/VOICE_AI_SDKs/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["telenow"]

@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = { "Telenow" => "https://telenow.ai" }
   s.platforms    = { :ios => "13.0" }
-  s.source       = { :git => "https://github.com/MettyAI/VOICE_AI_SDKs.git", :tag => "v#{package["version"]}" }
+  s.source       = { :git => "https://github.com/TelenowAI/VOICE_AI_SDKs.git", :tag => "v#{package["version"]}" }
   s.source_files = "ios/**/*.{h,m,mm,swift}"
   s.swift_version = "5.0"
   s.pod_target_xcconfig = {

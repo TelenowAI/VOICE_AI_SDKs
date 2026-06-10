@@ -53,11 +53,11 @@
   "homepage": "https://telenow.ai/docs/sdk-server",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MettyAI/VOICE_AI_SDKs.git",
+    "url": "git+https://github.com/TelenowAI/VOICE_AI_SDKs.git",
     "directory": "server-node"
   },
   "bugs": {
-    "url": "https://github.com/MettyAI/VOICE_AI_SDKs/issues"
+    "url": "https://github.com/TelenowAI/VOICE_AI_SDKs/issues"
   },
   "publishConfig": {
     "access": "public"

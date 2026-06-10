@@ -36,8 +36,8 @@ yet.** Publishing is irreversible (a version can't be reused), so always
 ### 1.5 Public repos to create (metadata already points at them)
 | Repo | Contents | Why |
 |---|---|---|
-| `MettyAI/VOICE_AI_SDKs` (public) | a copy/subtree of `voice_ai/sdk/` | npm `repository`/`bugs` links, PyPI/crates `Source` links, the RN podspec `s.source`, provenance |
-| `MettyAI/telenow-swift` (public) | `sdk/swift/` contents with `Package.swift` at the repo **root** | SwiftPM can only consume a package whose manifest is at the repo root |
+| `TelenowAI/VOICE_AI_SDKs` (public) | a copy/subtree of `voice_ai/sdk/` | npm `repository`/`bugs` links, PyPI/crates `Source` links, the RN podspec `s.source`, provenance |
+| `TelenowAI/telenow-swift` (public) | `sdk/swift/` contents with `Package.swift` at the repo **root** | SwiftPM can only consume a package whose manifest is at the repo root |
 
 ## 2. Versioning
 - **SemVer** everywhere. Pre-1.0 (`0.x`) lets you iterate; breaking → bump minor.
@@ -161,11 +161,11 @@ cd sdk/swift && swift build                      # sanity
 # one-time: create the public repo and push the swift package as its root
 git init /tmp/telenow-swift && cp -R . /tmp/telenow-swift && cd /tmp/telenow-swift
 git add -A && git commit -m "TelenowSDK v0.1.1"
-git remote add origin git@github.com:MettyAI/telenow-swift.git
+git remote add origin git@github.com:TelenowAI/telenow-swift.git
 git push -u origin main
 git tag v0.1.1 && git push origin v0.1.1
 ```
-Consumers then add `https://github.com/MettyAI/telenow-swift` in Xcode
+Consumers then add `https://github.com/TelenowAI/telenow-swift` in Xcode
 (*File → Add Package Dependencies*) or in `Package.swift`.
 
 **CocoaPods (optional):** create `TelenowSDK.podspec` (name, version, source git

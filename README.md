@@ -35,9 +35,9 @@ toolchain to compile it (Android SDK/NDK, Flutter, an RN app) isn't present here
 so it compiles on its own platform rather than in this repo's CI.
 
 **Naming is final**: npm scope `@telenow`, PyPI `telenow`, crates.io
-`telenow-audio-core`, Swift `TelenowSDK` (public repo `MettyAI/telenow-swift`),
+`telenow-audio-core`, Swift `TelenowSDK` (public repo `TelenowAI/telenow-swift`),
 Maven `ai.telenow` — register exactly these (fallbacks in RELEASING.md §1 if a
-name is taken). Public source home: `MettyAI/VOICE_AI_SDKs`.
+name is taken). Public source home: `TelenowAI/VOICE_AI_SDKs`.
 
 See [RELEASING.md](RELEASING.md) for how to publish each one, and
 [INTEGRATION_CHECKLIST.md](INTEGRATION_CHECKLIST.md) for wiring the backend
