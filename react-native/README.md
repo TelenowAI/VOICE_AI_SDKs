@@ -1,63 +1,115 @@
 # @telenow/react-native
 
-[Telenow](https://telenow.ai) voice AI SDK for React Native — real-time AI voice agent calls on iOS
-and Android. The control plane + DSP run in JS (`src/index.ts`, reusing
-`@telenow/client`'s pure modules); the native module (`ios/TelenowAudio.swift`,
-`android/.../TelenowAudioModule.kt`) does only mic capture + PCM playback in
-voice-communication mode (hardware echo cancellation).
-
-**Status:** packaged for autolinking — compiled `dist/`, `telenow-react-native.podspec`
-(+ `RCT_EXTERN_MODULE` bridge + bridging header), `android/build.gradle` +
-`TelenowAudioPackage`. Smoke-test in a real RN app before tagging stable.
-
-## Install
+[Telenow](https://telenow.ai) voice AI SDK for React Native — real-time AI
+voice agent calls on **iOS and Android**. The control plane, codecs, and
+jitter buffer run in JS (shared with
+[`@telenow/client`](https://www.npmjs.com/package/@telenow/client)); a small
+native module does only mic capture + PCM playback in the platform's
+**voice-communication mode**, so hardware echo cancellation and noise
+suppression are on automatically — speakerphone works without the agent
+hearing itself.
 
 ```bash
-npm i @telenow/react-native @telenow/client
-cd ios && pod install
+npm install @telenow/react-native @telenow/client
+cd ios && pod install        # autolinks the native TelenowAudio module
 ```
 
-Request the mic permission before starting a call: `RECORD_AUDIO` (Android,
-runtime) and `NSMicrophoneUsageDescription` (iOS `Info.plist`).
+## Before you start
 
-## Use
+1. A **Telenow account + agent** ([dashboard](https://telenow.ai) → Agents).
+2. **Authorization** — recommended: your backend mints a session with an org
+   API key (`calls.createWeb()` in
+   [`@telenow/server`](https://www.npmjs.com/package/@telenow/server) /
+   `init_web_call()` in Python) and hands `{ sessionId, websocketUrl }` to the
+   app. Alternatives: the agent's published `publicSlug`, or an ephemeral
+   client `token`.
+3. **Microphone permission**:
+   - **iOS** — add to `Info.plist`:
+     ```xml
+     <key>NSMicrophoneUsageDescription</key>
+     <string>Voice calls with our assistant</string>
+     ```
+   - **Android** — `<uses-permission android:name="android.permission.RECORD_AUDIO" />`
+     in the manifest **and** request it at runtime (`PermissionsAndroid.request`)
+     before `start()`.
+
+## Quickstart
 
 ```tsx
 import { TelenowCall } from '@telenow/react-native';
 
 const call = new TelenowCall({
-  session,                    // { sessionId, websocketUrl } minted by YOUR backend (recommended)
-  // publicSlug: 'my-agent',  // or a published agent
+  session,                    // { sessionId, websocketUrl } from YOUR backend (recommended)
+  // publicSlug: 'my-agent',  // or: published agent, no auth
   baseUrl: 'https://api.telenow.ai',
 });
-call.onState = (s) => setCallState(s);
+
+call.onState = (s) => setCallState(s);   // 'connecting'|'live'|'reconnecting'|'ended'|'error'
 call.onTranscript = (role, text) => append({ role, text });
-await call.start();
+
+await call.start();     // starts native audio + connects → 'live'
+call.setMuted(true);
+call.stop();
 ```
 
-## Backend-minted session (recommended)
+## API
 
-Have YOUR backend call init-web-call with its org API key (`@telenow/server`
-`calls.createWeb` / Python `init_web_call`) and hand the resulting
-`sessionId` + `websocketUrl` to the app — the SDK then skips on-device session
-init, so no token or slug ships in the client. The SDK also answers server
-`ping` events (powers the latency breakdown) and flushes queued agent audio on
-`clear` (barge-in).
+### `TelenowCallOptions`
 
-## Pre-stable device checklist
-1. `npx react-native init` a scratch app, `npm i` this package (local tarball
-   via `npm pack`), `pod install`, build to a real iPhone + Android phone.
-2. Place a call against a published agent: confirm two-way audio, mute,
-   barge-in (interrupt the agent mid-sentence), kill Wi-Fi briefly (reconnect),
-   and speakerphone echo (the agent must not hear itself).
-3. Optional (perf): swap the JS DSP for `telenow-audio-core` builds —
-   Android `cargo ndk` → `.so` + JNI, iOS `.xcframework` (see
-   `../audio-core/README.md`). Not required: the JS DSP is the verified
-   reference and fast enough for a single call.
+| Option | Type | Notes |
+|---|---|---|
+| `session` | `{ sessionId, websocketUrl }` | Backend-minted session — skips on-device init (recommended). |
+| `publicSlug` | `string` | Published agent, no auth. |
+| `token` | `string` | Ephemeral client token (`Authorization: Bearer`). |
+| `baseUrl` | `string` | API origin (default `''`; set `https://api.telenow.ai`). |
+| `variables` | `Record<string,string>` | [Context variables](https://telenow.ai/docs/context-variables) for the agent prompt. |
+| `uplinkEncoding` | `'mulaw' \| 'pcm16'` | Default `'mulaw'` (8 kHz) — what the platform decodes. Keep it. |
+| `reconnect` | `{ maxAttempts?, baseDelayMs?, maxDelayMs?, jitter? }` | Default 6 attempts, 0.5 s → 10 s, ±30 %. |
 
-> Key gotcha: route agent playback **through the voice-processing unit** so the
-> OS echo-canceller removes the agent's own voice from the mic (the native
-> modules already do this — keep it that way).
+Callbacks: `onState(state)`, `onTranscript(role, text)`.
+Methods: `start(): Promise<void>`, `stop()`, `setMuted(boolean)`.
+
+### What the SDK handles
+
+- **Echo & noise** — iOS `AVAudioSession` `.voiceChat` (VoiceProcessingIO),
+  Android `VOICE_COMMUNICATION` source: hardware AEC/NS/AGC. Agent playback is
+  routed through the voice-processing unit so the echo canceller removes the
+  agent's own voice from the mic.
+- **Barge-in** — interrupting the agent flushes queued audio instantly
+  (native `clearPlayback`).
+- **Reconnect** — drops retry with exponential backoff while audio keeps
+  running; `reconnecting` → `live`.
+- **Latency pings** — answered automatically so dashboard analytics show real
+  round-trip times.
+
+## Architecture (what's native, what's JS)
+
+```
+JS  : session init → ReconnectingSocket → μ-law/PCM codecs → jitter buffer
+iOS : AVAudioEngine mic tap + AVAudioPlayerNode      (ios/TelenowAudio.swift)
+Andr: AudioRecord(VOICE_COMMUNICATION) + AudioTrack  (android/.../TelenowAudioModule.kt)
+```
+
+The native module (`TelenowAudio`) is autolinked via the bundled podspec and
+`android/build.gradle`; no manual registration needed on RN ≥ 0.71.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `TelenowAudio is null` / invariant violation | Autolinking didn't run: re-run `pod install` (iOS) / a clean Gradle sync (Android), then rebuild the app — a JS-only reload isn't enough after install. |
+| Silent call on Android | `RECORD_AUDIO` runtime permission wasn't granted before `start()`. |
+| Silent call on iOS simulator | Test audio on a **real device**; simulator audio routing is unreliable. |
+| 401/403 at start | Bad/expired token, or API access disabled on the agent's Publish tab. |
+| 400 naming a variable | A required context variable wasn't passed (or bake variables into the backend-minted session). |
+| Echo when on speaker | Don't play agent audio through a separate player — keep the SDK's playback path (it runs through the echo canceller). |
+
+## Device smoke-test checklist (before you ship)
+
+1. Real iPhone + real Android phone, mic permission granted.
+2. Two-way audio, mute/unmute, barge-in (interrupt mid-sentence).
+3. Toggle Wi-Fi off/on briefly — expect `reconnecting` → `live`.
+4. Speakerphone — the agent must not hear itself.
 
 ---
 

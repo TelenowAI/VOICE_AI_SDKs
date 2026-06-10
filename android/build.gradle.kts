@@ -27,7 +27,7 @@ publishing {
         create<MavenPublication>("release") {
             groupId = "ai.telenow"
             artifactId = "sdk"
-            version = "0.1.1"
+            version = "0.1.2"
             afterEvaluate { from(components["release"]) }
         }
     }

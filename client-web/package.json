@@ -1,6 +1,6 @@
 {
   "name": "@telenow/client",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Telenow voice AI SDK for the browser — add real-time AI voice agent calls to any web app: mic capture, echo & noise suppression, adaptive jitter buffer, barge-in, auto-reconnect, live transcripts. Framework-agnostic, zero dependencies.",
   "type": "module",
   "main": "./dist/index.js",

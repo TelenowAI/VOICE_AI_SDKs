@@ -1,75 +1,142 @@
 # @telenow/client
 
-Headless browser client for the [Telenow](https://telenow.ai) Voice SDK. Framework-agnostic (no React).
-
-- **`TelenowCall`** — the whole call in one object: session init → WebSocket with
-  auto-reconnect → mic capture → jitter-buffered playback → barge-in flush →
-  transcripts → latency ping echo. You own only the UI.
-- **Mic capture** — G.711 μ-law 8 kHz by default (what the server decodes today);
-  16 kHz PCM16 available for the HD uplink once backend Phase C ships.
-  AudioWorklet with ScriptProcessor fallback; browser echo cancellation +
-  noise suppression on by default.
-- **Adaptive jitter buffer** — RFC-3550 jitter estimate, adaptive depth, underrun concealment.
-- **Codecs** — resample, PCM16-LE, G.711 μ-law (encode + decode), RMS dBFS metering.
+Headless browser SDK for [Telenow](https://telenow.ai) voice AI. One object —
+`TelenowCall` — runs the entire call (session init → WebSocket with
+auto-reconnect → mic capture with echo/noise suppression → jitter-buffered
+playback → barge-in → live transcripts → latency telemetry). **You build only
+the UI.** Framework-agnostic, ESM, zero runtime dependencies.
 
 ```bash
 npm install @telenow/client
 ```
 
-## Quickstart — the SDK does everything, you render the UI
+## Before you start
+
+You need three things:
+
+1. A **Telenow account** and an **agent** — create both in the
+   [dashboard](https://telenow.ai) (Agents → New agent).
+2. A way to **authorize the call** — one of:
+   - **Backend-minted session (recommended for production).** Your server
+     calls init-web-call with an org **API key** (dashboard → Developers tab)
+     and returns `{ sessionId, websocketUrl }` to the browser. One line with
+     [`@telenow/server`](https://www.npmjs.com/package/@telenow/server) or the
+     [`telenow`](https://pypi.org/project/telenow/) Python package. The key
+     never leaves your server.
+   - **Public slug** — publish the agent (agent → Publish tab → public link);
+     no auth, optionally gated by an access code, rate-limited.
+3. A **secure context**: browsers only expose the microphone on `https://`
+   (or `localhost`). Call `start()` from a user gesture (click) — autoplay
+   policies block audio that starts on page load.
+
+## Quickstart
 
 ```ts
 import { TelenowCall } from '@telenow/client';
 
-const call = new TelenowCall({
-  // Pick ONE way to authorize:
-  session,                      // ① { sessionId, websocketUrl } minted by YOUR backend
-                                //    (@telenow/server `calls.createWeb`) — recommended,
-                                //    no credential ever ships to the browser
-  // publicSlug: 'my-agent',    // ② published agent, no auth
-  // token: '<client token>',   // ③ ephemeral client token (Authorization: Bearer)
+// Recommended: fetch a session your backend minted (no credential here).
+const session = await fetch('/voice/session', { method: 'POST' }).then((r) => r.json());
+// → { sessionId: '…', websocketUrl: 'wss://api.telenow.ai/ws/web-agent' }
 
-  baseUrl: 'https://api.telenow.ai',
-  onState: (s) => render(s),                       // idle|connecting|live|reconnecting|ended|error
-  onTranscript: (line) => log(line.role, line.text),
-  onLevel: (dbfs) => meter(dbfs),                  // mic VU meter
+const call = new TelenowCall({
+  session,
+  // publicSlug: 'my-agent',          // alternative: published agent, no backend needed
+  baseUrl: 'https://api.telenow.ai',  // only used when the SDK does its own init
+  onState: (s) => render(s),          // 'idle'|'connecting'|'live'|'reconnecting'|'ended'|'error'
+  onTranscript: (t) => addLine(t.role, t.text, t.isFinal),
+  onLevel: (dbfs) => meter(dbfs),     // mic level per 20 ms frame — drive a VU meter
+  onError: (msg) => showError(msg),
 });
 
-await call.start();        // mic permission → connect → live
-call.setMuted(true);
-call.sendText('I prefer email', { chat: true });   // typed turn, text-only reply
-call.stop();
+document.querySelector('#call')!.addEventListener('click', async () => {
+  await call.start();                 // mic permission → connect → 'live'
+});
 ```
 
-Barge-in (`clear`), agent audio scheduling, reconnect backoff, and the latency
-ping/pong echo are all handled internally.
-
-## Building blocks (advanced)
-
-`CaptureEngine`, `PlaybackEngine`, `ReconnectingSocket`, and the codec/jitter
-primitives are exported individually if you want to assemble the pipeline
-yourself:
+During the call:
 
 ```ts
-import { CaptureEngine, PlaybackEngine } from '@telenow/client';
-
-const playback = new PlaybackEngine(audioCtx, { onDecision: (d) => console.log(d.bufferedSec) });
-ws.onmessage = (e) => {
-  const m = JSON.parse(e.data);
-  if (m.event === 'media') playback.push({ data: m.data, format: m.format, sampleRate: m.sampleRate });
-  if (m.event === 'clear') playback.clear(); // barge-in
-};
-
-const capture = new CaptureEngine({
-  // default: 'mulaw' @ 8 kHz — matches the current server.
-  // 'pcm16' @ 16 kHz is the HD uplink; enable only after backend Phase C.
-  onFrame: (b64) => ws.send(JSON.stringify({ event: 'media', data: b64 })),
-});
-await capture.start();
+call.setMuted(true);                                   // mic on/off
+call.sendText('Use my work email');                    // typed user turn → spoken reply
+call.sendText('What are your hours?', { chat: true }); // typed turn → text-only reply
+call.stop();                                           // hang up locally
+call.state;        // current CallState
+call.muted;        // boolean
+call.sessionId;    // pass to your backend for transfer/end via the server SDK
 ```
 
-Build: `npm run build` (emits `dist/` ESM + `.d.ts`). Test: `npm test`.
-See `../RELEASING.md` to publish.
+When the **agent** ends the call (or your backend calls `calls.end()`), the
+SDK receives `session_end`, tears down audio, and fires `onState('ended')` —
+you never handle protocol events yourself.
+
+## `TelenowCall` options
+
+| Option | Type | Default | What it does |
+|---|---|---|---|
+| `session` | `{ sessionId, websocketUrl }` | — | Pre-minted session from your backend. **Skips init entirely** — strongest option. |
+| `publicSlug` | `string` | — | Published-agent slug → public widget session (no auth). |
+| `token` | `string` | — | Ephemeral client token (sent as `Authorization: Bearer`). |
+| `baseUrl` | `string` | same-origin | API origin for init, e.g. `https://api.telenow.ai`. |
+| `variables` | `Record<string,string>` | — | [Context variables](https://telenow.ai/docs/context-variables) for the agent prompt. Required ones must be present or init fails with 400. |
+| `audio.encoding` | `'mulaw' \| 'pcm16'` | `'mulaw'` | Uplink wire format. **Keep the default** — it's what the platform decodes. |
+| `audio.targetSampleRate` | `number` | 8000 | Uplink rate (16000 when `pcm16`). |
+| `audio.echoCancellation` | `boolean` | `true` | Browser AEC. Keep on for two-way audio. |
+| `audio.noiseSuppression` | `boolean` | `true` | Browser noise suppression. |
+| `audio.autoGainControl` | `boolean` | `false` | Off by default — AGC clips loud speech and hurts transcription. |
+| `audio.deviceId` | `string` | system default | Pick a specific microphone (`enumerateDevices()`). |
+| `reconnect.maxAttempts` | `number` | 6 | Reconnect attempts before giving up. |
+| `reconnect.baseDelayMs` / `maxDelayMs` | `number` | 500 / 10000 | Exponential backoff window. |
+| `reconnect.jitter` | `number` | 0.3 | ± randomization on each delay. |
+| `onState` | `(s: CallState) => void` | — | Lifecycle: `idle → connecting → live (⇄ reconnecting) → ended`, or `error`. |
+| `onTranscript` | `(t: {role, text, isFinal}) => void` | — | Live lines for both `user` and `assistant`. |
+| `onLevel` | `(dbfs: number) => void` | — | Mic RMS level per frame (≈ −90…0). |
+| `onError` | `(message: string) => void` | — | Init/runtime failures (state also becomes `'error'`). |
+
+Methods: `start(): Promise<void>` (throws on failure, also surfaces via
+`onError`), `stop()`, `setMuted(boolean)`, `sendText(text, { chat? }): boolean`
+(false when the socket isn't open). Getters: `state`, `muted`, `sessionId`.
+
+## How the audio path works
+
+- **Uplink**: `getUserMedia` → AudioWorklet (ScriptProcessor fallback) →
+  resample to 8 kHz → G.711 μ-law → base64 frames every 20 ms over the
+  WebSocket. Echo cancellation + noise suppression are the browser's own
+  WebRTC processing — no extra setup.
+- **Downlink**: agent audio frames (up to 24 kHz PCM) are scheduled through an
+  **adaptive jitter buffer** (RFC-3550-style estimate; depth adapts between
+  60–400 ms) with fade-in concealment on underruns — no clicks on bad Wi-Fi.
+- **Barge-in**: when the caller starts talking over the agent, the server
+  flushes; queued audio is dropped instantly client-side.
+- **Reconnect**: network blips re-dial the WebSocket with backoff and re-attach
+  to the same session; you'll see `reconnecting` → `live`.
+
+## Error handling & troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `getUserMedia is unavailable` | Page isn't `https://` (or `localhost`), or the browser blocked mic permission. |
+| `start()` rejects with `session init failed (HTTP 401/403)` | Bad/expired token, or the agent's API access is disabled (agent → Publish tab). |
+| `…(HTTP 400)` mentioning a variable | The agent requires [context variables](https://telenow.ai/docs/context-variables) you didn't pass. |
+| Connects but no agent audio | `start()` not triggered by a user gesture (autoplay policy) — bind it to a click. |
+| Agent hears itself / echo | You disabled `echoCancellation`. Leave it on. |
+| State stuck `reconnecting` then `ended` | Network is down or the session expired server-side; start a new call. |
+
+## Advanced: build your own pipeline
+
+Everything `TelenowCall` uses is exported — `CaptureEngine`, `PlaybackEngine`
+(`push/clear/close/bufferedSec`), `ReconnectingSocket`, `AdaptiveJitterBuffer`,
+and the codec utilities (`pcm16ToMulaw`, `mulawToPcm16`, `resampleFloat32`,
+`rmsDbfs`, base64 helpers…). The raw WebSocket protocol (`start`, `media`,
+`text`, `pong` up; `media`, `clear`, `transcript`, `ping`, `session_end` down)
+is documented in the
+[web-call guide](https://telenow.ai/docs/guide-web-call-api).
+
+Using React? [`@telenow/react`](https://www.npmjs.com/package/@telenow/react)
+wraps this package in a `useVoiceCall()` hook. React Native?
+[`@telenow/react-native`](https://www.npmjs.com/package/@telenow/react-native).
+
+Build: `npm run build` · Test: `npm test` · Requires a modern evergreen
+browser (Web Audio + WebSocket + getUserMedia).
 
 ---
 

@@ -1,6 +1,6 @@
 [package]
 name = "telenow-audio-core"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Real-time voice DSP for the Telenow voice AI SDK — G.711 μ-law codec, linear resampler, RFC 3550-style adaptive jitter buffer, RMS metering. Pure std, no unsafe, no dependencies."
 license = "MIT"
