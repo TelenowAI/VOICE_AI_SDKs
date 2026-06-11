@@ -1,0 +1,31 @@
+# Publishes to npm with provenance on every GitHub release.
+#
+# n8n's verified-community-nodes program REQUIRES releases to be published
+# from GitHub Actions with an npm provenance statement (local `npm publish`
+# is rejected) — keep this workflow as the only publish path.
+#
+# Setup: repo secret NPM_TOKEN = npm automation token with publish rights.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

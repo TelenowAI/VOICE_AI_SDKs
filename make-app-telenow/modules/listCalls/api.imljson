@@ -1,0 +1,13 @@
+{
+    "url": "/api/v1/calls",
+    "method": "GET",
+    "qs": {
+        "agent_id": "{{ifempty(parameters.agentId, null)}}",
+        "status": "{{ifempty(parameters.status, null)}}",
+        "limit": "{{ifempty(parameters.limit, 50)}}"
+    },
+    "response": {
+        "iterate": "{{body.calls}}",
+        "output": "{{item}}"
+    }
+}

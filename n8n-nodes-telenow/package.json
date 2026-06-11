@@ -1,0 +1,61 @@
+{
+  "name": "n8n-nodes-telenow",
+  "version": "0.1.0",
+  "description": "n8n community nodes for Telenow voice AI: trigger workflows on call events (call ended, analyzed, recording ready) and place outbound AI agent calls.",
+  "keywords": [
+    "n8n-community-node-package",
+    "telenow",
+    "voice ai",
+    "voice agent",
+    "telephony",
+    "calls",
+    "ivr"
+  ],
+  "license": "MIT",
+  "homepage": "https://telenow.ai/docs",
+  "author": {
+    "name": "Telenow",
+    "email": "support@telenow.ai"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/telenow-ai/n8n-nodes-telenow.git"
+  },
+  "engines": {
+    "node": ">=20.15"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc && gulp build:icons",
+    "dev": "tsc --watch",
+    "format": "prettier nodes credentials --write",
+    "lint": "eslint nodes credentials",
+    "lintfix": "eslint nodes credentials --fix",
+    "prepublishOnly": "npm run build && npm run lint"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/TelenowApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Telenow/Telenow.node.js",
+      "dist/nodes/Telenow/TelenowTrigger.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@typescript-eslint/parser": "~8.32.0",
+    "eslint": "^8.57.0",
+    "eslint-plugin-n8n-nodes-base": "^1.16.3",
+    "gulp": "^5.0.0",
+    "n8n-workflow": "*",
+    "prettier": "^3.5.3",
+    "typescript": "^5.8.2"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

@@ -1,0 +1,47 @@
+[
+    {
+        "name": "agentId",
+        "type": "select",
+        "label": "Agent",
+        "required": true,
+        "options": "rpc://listAgents"
+    },
+    {
+        "name": "toNumber",
+        "type": "text",
+        "label": "To number",
+        "required": true,
+        "help": "Destination phone number in E.164 format, e.g. +14155550123."
+    },
+    {
+        "name": "variables",
+        "type": "array",
+        "label": "Context variables",
+        "spec": [
+            { "name": "key", "type": "text", "label": "Name", "required": true },
+            { "name": "value", "type": "text", "label": "Value" }
+        ],
+        "help": "Substituted into the agent's prompt and greeting as {placeholder} values."
+    },
+    {
+        "name": "firstResponse",
+        "type": "text",
+        "label": "Opening line",
+        "help": "Overrides the agent's default greeting for this call."
+    },
+    {
+        "name": "machineDetection",
+        "type": "select",
+        "label": "On answering machine",
+        "options": [
+            { "label": "Continue talking", "value": "true" },
+            { "label": "Hang up", "value": "hangup" }
+        ]
+    },
+    {
+        "name": "identifier",
+        "type": "text",
+        "label": "Caller identifier",
+        "help": "Trusted ID for the person being called (e.g. an account ID); injected into the agent's tool calls when caller identity is enabled."
+    }
+]

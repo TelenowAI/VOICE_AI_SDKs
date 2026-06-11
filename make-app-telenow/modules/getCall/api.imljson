@@ -1,0 +1,7 @@
+{
+    "url": "/api/v1/calls/{{parameters.callId}}",
+    "method": "GET",
+    "response": {
+        "output": "{{body}}"
+    }
+}

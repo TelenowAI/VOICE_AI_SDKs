@@ -1,0 +1,15 @@
+{
+    "url": "/api/v1/agents",
+    "method": "GET",
+    "qs": {
+        "is_active": "true",
+        "limit": "200"
+    },
+    "response": {
+        "iterate": "{{body.agents}}",
+        "output": {
+            "label": "{{item.name}}",
+            "value": "{{item.id}}"
+        }
+    }
+}

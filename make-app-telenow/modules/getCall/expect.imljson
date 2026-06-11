@@ -1,0 +1,9 @@
+[
+    {
+        "name": "callId",
+        "type": "text",
+        "label": "Call ID",
+        "required": true,
+        "help": "The session ID of the call (from a trigger or List Calls)."
+    }
+]

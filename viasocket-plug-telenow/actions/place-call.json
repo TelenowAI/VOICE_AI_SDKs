@@ -1,0 +1,35 @@
+{
+  "name": "Place AI Agent Call",
+  "description": "Dials a phone number and connects it to a Telenow AI agent.",
+  "inputFields": [
+    { "key": "agentId", "label": "Agent ID", "type": "select", "required": true, "dynamic": "GET /api/v1/agents -> agents[] (label: name, value: id)" },
+    { "key": "toNumber", "label": "To number (E.164)", "type": "string", "required": true },
+    { "key": "customerName", "label": "Customer name (context variable)", "type": "string", "required": false },
+    { "key": "firstResponse", "label": "Opening line", "type": "string", "required": false },
+    { "key": "machineDetection", "label": "On answering machine", "type": "select", "options": ["true", "hangup"], "required": false },
+    { "key": "identifier", "label": "Caller identifier", "type": "string", "required": false }
+  ],
+  "actionJson": {
+    "method": "POST",
+    "url": "https://api.telenow.ai/api/sessions/initiate-call",
+    "headers": {
+      "X-API-Key": "{{context.authData.api_key}}",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "agentId": "{{context.inputData.agentId}}",
+      "mobileNumber": "{{context.inputData.toNumber}}",
+      "variables": { "customer_name": "{{context.inputData.customerName}}" },
+      "firstResponse": "{{context.inputData.firstResponse}}",
+      "machineDetection": "{{context.inputData.machineDetection}}",
+      "identifier": "{{context.inputData.identifier}}"
+    }
+  },
+  "outputSample": {
+    "success": true,
+    "data": {
+      "sessionId": "00000000-0000-4000-8000-000000000001",
+      "status": "initiated"
+    }
+  }
+}

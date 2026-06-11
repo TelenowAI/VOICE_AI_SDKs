@@ -1,0 +1,28 @@
+{
+  "name": "List Calls",
+  "description": "Lists recent calls, newest first.",
+  "inputFields": [
+    { "key": "agentId", "label": "Agent ID", "type": "string", "required": false },
+    { "key": "status", "label": "Status", "type": "select", "options": ["active", "ended"], "required": false },
+    { "key": "limit", "label": "Limit", "type": "number", "required": false, "default": 50 }
+  ],
+  "actionJson": {
+    "method": "GET",
+    "url": "https://api.telenow.ai/api/v1/calls?agent_id={{context.inputData.agentId}}&status={{context.inputData.status}}&limit={{context.inputData.limit}}",
+    "headers": { "X-API-Key": "{{context.authData.api_key}}" }
+  },
+  "outputSample": {
+    "calls": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "status": "ended",
+        "channel": "telephony",
+        "from_number": "+14155550100",
+        "to_number": "+14155550123",
+        "duration_sec": 142,
+        "disposition": "resolved"
+      }
+    ],
+    "total": 1
+  }
+}

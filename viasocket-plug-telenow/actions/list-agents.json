@@ -1,0 +1,21 @@
+{
+  "name": "List Agents",
+  "description": "Lists the organization's AI agents (for dropdowns and routing).",
+  "inputFields": [],
+  "actionJson": {
+    "method": "GET",
+    "url": "https://api.telenow.ai/api/v1/agents?is_active=true&limit=200",
+    "headers": { "X-API-Key": "{{context.authData.api_key}}" }
+  },
+  "outputSample": {
+    "agents": [
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "name": "Support Agent",
+        "description": "Handles order-status questions",
+        "is_active": true
+      }
+    ],
+    "total": 1
+  }
+}

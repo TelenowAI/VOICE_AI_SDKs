@@ -1,0 +1,10 @@
+{
+    "output": "{{body}}",
+    "respond": {
+        "type": "json",
+        "status": 200,
+        "body": {
+            "ok": true
+        }
+    }
+}

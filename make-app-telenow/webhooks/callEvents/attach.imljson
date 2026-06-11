@@ -1,0 +1,17 @@
+{
+    "url": "/api/v1/hooks",
+    "method": "POST",
+    "body": {
+        "events": "{{parameters.events}}",
+        "target_url": "{{webhook.url}}",
+        "agent_id": "{{ifempty(parameters.agentId, null)}}",
+        "include_transcript": "{{parameters.includeTranscript}}",
+        "include_recording": "{{parameters.includeRecording}}",
+        "source": "make"
+    },
+    "response": {
+        "data": {
+            "externalHookId": "{{body.id}}"
+        }
+    }
+}

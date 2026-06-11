@@ -1,0 +1,26 @@
+[
+    {
+        "name": "agentId",
+        "type": "select",
+        "label": "Agent",
+        "required": false,
+        "options": "rpc://listAgents"
+    },
+    {
+        "name": "status",
+        "type": "select",
+        "label": "Status",
+        "required": false,
+        "options": [
+            { "label": "Active", "value": "active" },
+            { "label": "Ended", "value": "ended" }
+        ]
+    },
+    {
+        "name": "limit",
+        "type": "uinteger",
+        "label": "Limit",
+        "default": 50,
+        "help": "Maximum number of calls to return (1-200)."
+    }
+]

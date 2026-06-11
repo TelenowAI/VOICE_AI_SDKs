@@ -1,0 +1,15 @@
+{
+    "url": "/api/sessions/initiate-call",
+    "method": "POST",
+    "body": {
+        "agentId": "{{parameters.agentId}}",
+        "mobileNumber": "{{parameters.toNumber}}",
+        "variables": "{{toCollection(parameters.variables, 'key', 'value')}}",
+        "firstResponse": "{{ifempty(parameters.firstResponse, null)}}",
+        "machineDetection": "{{ifempty(parameters.machineDetection, null)}}",
+        "identifier": "{{ifempty(parameters.identifier, null)}}"
+    },
+    "response": {
+        "output": "{{body.data}}"
+    }
+}

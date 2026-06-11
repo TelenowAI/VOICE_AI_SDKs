@@ -1,0 +1,40 @@
+[
+    {
+        "name": "events",
+        "type": "select",
+        "label": "Events",
+        "required": true,
+        "multiple": true,
+        "default": ["call.ended"],
+        "options": [
+            { "label": "Call Started", "value": "call.started" },
+            { "label": "Call Ended", "value": "call.ended" },
+            { "label": "Call Analyzed", "value": "call.analyzed" },
+            { "label": "Recording Ready", "value": "recording.ready" },
+            { "label": "Transcript Turn", "value": "transcript.ready" },
+            { "label": "Tool Invoked", "value": "tool.invoked" }
+        ]
+    },
+    {
+        "name": "agentId",
+        "type": "select",
+        "label": "Agent",
+        "required": false,
+        "options": "rpc://listAgents",
+        "help": "Only receive events for this agent. Leave empty for all agents."
+    },
+    {
+        "name": "includeTranscript",
+        "type": "boolean",
+        "label": "Include transcript",
+        "default": true,
+        "help": "Attach the conversation transcript to call.ended events."
+    },
+    {
+        "name": "includeRecording",
+        "type": "boolean",
+        "label": "Include recording",
+        "default": false,
+        "help": "Attach a time-limited recording URL to call.ended events."
+    }
+]

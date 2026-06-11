@@ -1,0 +1,18 @@
+{
+    "url": "{{parameters.baseUrl}}/api/v1/me",
+    "headers": {
+        "x-api-key": "{{parameters.apiKey}}"
+    },
+    "response": {
+        "uid": "{{body.org_id}}",
+        "metadata": {
+            "type": "text",
+            "value": "{{body.org_name}}"
+        }
+    },
+    "log": {
+        "sanitize": [
+            "request.headers.x-api-key"
+        ]
+    }
+}

@@ -1,0 +1,18 @@
+[
+    {
+        "name": "apiKey",
+        "type": "password",
+        "label": "API Key",
+        "required": true,
+        "help": "Create one in the Telenow dashboard under **Developers → API Keys** (role `developer` or above)."
+    },
+    {
+        "name": "baseUrl",
+        "type": "url",
+        "label": "API Base URL",
+        "default": "https://api.telenow.ai",
+        "advanced": true,
+        "required": true,
+        "help": "Change only for self-hosted or regional deployments."
+    }
+]

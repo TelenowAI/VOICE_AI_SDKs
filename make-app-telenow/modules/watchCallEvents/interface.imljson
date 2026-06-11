@@ -1,0 +1,42 @@
+[
+    { "name": "event", "type": "text", "label": "Event type" },
+    { "name": "sessionId", "type": "text", "label": "Call ID" },
+    { "name": "agentId", "type": "text", "label": "Agent ID" },
+    { "name": "from", "type": "text", "label": "Caller number" },
+    { "name": "fromOrTo", "type": "text", "label": "Caller / dialed number" },
+    { "name": "durationSecs", "type": "number", "label": "Duration (seconds)" },
+    { "name": "messageCount", "type": "number", "label": "Message count" },
+    { "name": "variables", "type": "collection", "label": "Context variables", "spec": [] },
+    {
+        "name": "recording",
+        "type": "collection",
+        "label": "Recording",
+        "spec": [
+            { "name": "id", "type": "text", "label": "Recording ID" },
+            { "name": "url", "type": "url", "label": "URL" },
+            { "name": "expiresAt", "type": "date", "label": "URL expires at" }
+        ]
+    },
+    { "name": "transcript", "type": "array", "label": "Transcript", "spec": { "type": "collection", "spec": [
+        { "name": "role", "type": "text", "label": "Role" },
+        { "name": "text", "type": "text", "label": "Text" },
+        { "name": "at", "type": "date", "label": "At" }
+    ] } },
+    {
+        "name": "analysis",
+        "type": "collection",
+        "label": "Analysis",
+        "spec": [
+            { "name": "summary", "type": "text", "label": "Summary" },
+            { "name": "sentiment", "type": "text", "label": "Sentiment" },
+            { "name": "sentimentScore", "type": "number", "label": "Sentiment score" },
+            { "name": "disposition", "type": "text", "label": "Disposition" },
+            { "name": "actionItems", "type": "array", "label": "Action items", "spec": { "type": "text" } },
+            { "name": "topics", "type": "array", "label": "Topics", "spec": { "type": "text" } },
+            { "name": "score", "type": "number", "label": "QA score" }
+        ]
+    },
+    { "name": "name", "type": "text", "label": "Tool name" },
+    { "name": "status", "type": "text", "label": "Status" },
+    { "name": "latencyMs", "type": "number", "label": "Tool latency (ms)" }
+]

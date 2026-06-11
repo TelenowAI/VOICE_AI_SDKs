@@ -166,6 +166,159 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
       responses: { '200': { description: Updated } }
 
+  # ------------------------------------------------------------------
+  # /api/v1 — key-authed integration surface (Zapier / Make / n8n /
+  # viaSocket). Org always comes from the API key; responses are FLAT
+  # JSON (no {success,data} envelope).
+  # ------------------------------------------------------------------
+  /api/v1/me:
+    get:
+      operationId: whoAmI
+      summary: Connection test — identifies the key's org.
+      security: [{ ApiKeyAuth: [] }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org_id: { type: string, format: uuid }
+                  org_name: { type: string }
+                  key_id: { type: string, format: uuid }
+                  key_name: { type: string }
+                  key_role: { type: string, example: developer }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /api/v1/hooks:
+    get:
+      operationId: listHooks
+      summary: List webhook subscriptions (REST hooks).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema: { type: string, example: n8n }
+          description: Only hooks registered by this platform label.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooks:
+                    type: array
+                    items: { $ref: '#/components/schemas/Hook' }
+                  total: { type: integer }
+    post:
+      operationId: createHook
+      summary: Subscribe a target URL to webhook events (REST hooks).
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateHookRequest' }
+      responses:
+        '201':
+          description: Subscribed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hook' }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/v1/hooks/{id}:
+    delete:
+      operationId: deleteHook
+      summary: Unsubscribe (idempotent — already-gone returns deleted=false).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  deleted: { type: boolean }
+
+  /api/v1/agents:
+    get:
+      operationId: listAgentsSlim
+      summary: Slim agent list (ids + labels, for dropdowns).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: is_active, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses: { '200': { description: '{ agents: [...], total }' } }
+
+  /api/v1/numbers:
+    get:
+      operationId: listNumbersSlim
+      summary: Owned phone numbers (slim).
+      security: [{ ApiKeyAuth: [] }]
+      responses: { '200': { description: '{ numbers: [...], total }' } }
+
+  /api/v1/calls:
+    get:
+      operationId: listCallsV1
+      summary: Call history, newest first.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: agent_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, example: ended } }
+        - { name: sort, in: query, schema: { type: string, enum: [newest, oldest, longest, shortest] } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses: { '200': { description: '{ calls: [...], total }' } }
+
+  /api/v1/calls/{id}:
+    get:
+      operationId: getCallV1
+      summary: One call, including its transcript.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200': { description: Call object with transcript array }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/events/sample:
+    get:
+      operationId: sampleEvent
+      summary: Latest real payload for an event type (canned dummy if none).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [call.started, call.ended, transcript.ready, tool.invoked, recording.ready, call.analyzed]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  event_type: { type: string }
+                  is_real: { type: boolean }
+                  samples:
+                    type: array
+                    items: { type: object }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -203,6 +356,33 @@ components:
       properties:
         success: { type: boolean, example: true }
         data: { type: object }
+    Hook:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        target_url: { type: string, format: uri }
+        events:
+          type: array
+          items: { type: string, example: call.ended }
+        agent_id: { type: string, format: uuid, nullable: true }
+        include_recording: { type: boolean }
+        include_transcript: { type: boolean }
+        source: { type: string, example: zapier }
+        created_at: { type: string, format: date-time }
+    CreateHookRequest:
+      type: object
+      required: [target_url]
+      properties:
+        target_url: { type: string, format: uri, description: 'HTTPS receiver URL' }
+        event: { type: string, description: 'Single event name (alternative to the events array)' }
+        events:
+          type: array
+          items: { type: string }
+          description: 'Valid: call.started, call.ended, transcript.ready, tool.invoked, recording.ready, call.analyzed, or "*"'
+        agent_id: { type: string, format: uuid, description: Scope to one agent (omit = org-wide) }
+        include_recording: { type: boolean, default: false }
+        include_transcript: { type: boolean, default: false }
+        source: { type: string, description: 'Platform label: zapier | make | n8n | viasocket | …' }
     ClientTokenRequest:
       type: object
       required: [agentId]

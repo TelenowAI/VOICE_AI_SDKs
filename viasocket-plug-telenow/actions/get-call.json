@@ -1,0 +1,26 @@
+{
+  "name": "Get Call",
+  "description": "Fetches one call, including its transcript.",
+  "inputFields": [
+    { "key": "callId", "label": "Call ID", "type": "string", "required": true }
+  ],
+  "actionJson": {
+    "method": "GET",
+    "url": "https://api.telenow.ai/api/v1/calls/{{context.inputData.callId}}",
+    "headers": { "X-API-Key": "{{context.authData.api_key}}" }
+  },
+  "outputSample": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "status": "ended",
+    "channel": "telephony",
+    "direction": "outbound",
+    "from_number": "+14155550100",
+    "to_number": "+14155550123",
+    "duration_sec": 142,
+    "disposition": "resolved",
+    "transcript": [
+      { "role": "assistant", "text": "Hello! How can I help you today?", "at": "2026-01-01T12:00:02Z" },
+      { "role": "user", "text": "I'd like to check my order status.", "at": "2026-01-01T12:00:07Z" }
+    ]
+  }
+}
