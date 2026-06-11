@@ -1,6 +1,6 @@
 {
   "name": "@telenow/react-native",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Telenow voice AI SDK for React Native — real-time AI voice agent calls on iOS & Android: native voice-communication audio (hardware echo cancellation), live transcripts, barge-in, auto-reconnect.",
   "type": "module",
   "main": "./dist/index.js",

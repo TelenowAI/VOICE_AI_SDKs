@@ -161,6 +161,46 @@ test('no credentials and no session is a clear error', async () => {
   assert.equal(call.state, 'error');
 });
 
+test('halfDuplex gates mic frames while agent audio is buffered, reopens after the tail', async () => {
+  const media = fakeMedia();
+  let buffered = 0;
+  media.bufferedSec = () => buffered;
+  const call = new TelenowCall({
+    session,
+    WebSocketImpl: FakeWebSocket,
+    mediaAdapter: media,
+    turnTaking: 'halfDuplex',
+    halfDuplexTailMs: 0,
+  });
+  await call.start();
+  await tick();
+  const ws = FakeWebSocket.last;
+  const mediaFrames = () => ws.sent.map((s) => JSON.parse(s)).filter((m) => m.event === 'media');
+
+  buffered = 0.5; // agent speaking — gate closed
+  media.onFrame('AAAA');
+  assert.equal(mediaFrames().length, 0, 'frame must be dropped while agent audio plays');
+
+  buffered = 0; // drained; tail = 0ms but gateUntil was set 500ms ahead → still closed
+  media.onFrame('BBBB');
+  assert.equal(mediaFrames().length, 0, 'gate holds for the buffered duration');
+
+  await new Promise((r) => setTimeout(r, 520)); // past the 500ms gate
+  media.onFrame('CCCC');
+  assert.deepEqual(mediaFrames(), [{ event: 'media', data: 'CCCC' }]);
+});
+
+test('duplex (default) never gates the mic', async () => {
+  const media = fakeMedia();
+  media.bufferedSec = () => 5; // agent audio queued — must NOT matter in duplex
+  const call = new TelenowCall({ session, WebSocketImpl: FakeWebSocket, mediaAdapter: media });
+  await call.start();
+  await tick();
+  media.onFrame('AAAA');
+  const frames = FakeWebSocket.last.sent.map((s) => JSON.parse(s)).filter((m) => m.event === 'media');
+  assert.equal(frames.length, 1);
+});
+
 test('mute set before audio starts is applied to capture', async () => {
   const media = fakeMedia();
   const call = new TelenowCall({

@@ -64,10 +64,33 @@ call.stop();
 | `baseUrl` | `string` | API origin (default `''`; set `https://api.telenow.ai`). |
 | `variables` | `Record<string,string>` | [Context variables](https://telenow.ai/docs/context-variables) for the agent prompt. |
 | `uplinkEncoding` | `'mulaw' \| 'pcm16'` | Default `'mulaw'` (8 kHz) — what the platform decodes. Keep it. |
+| `audio` | `{ echoCancellation?, noiseSuppression?, autoGainControl? }` | Voice-processing toggles, defaults `true / true / false`. Android: `AcousticEchoCanceler` / `NoiseSuppressor` / `AutomaticGainControl` effects (hardware-dependent). iOS: AEC + NS ride together via the voice-chat session; AGC is OS-managed. |
+| `turnTaking` | `'duplex' \| 'halfDuplex'` | See **Turn-taking** below. Default `'duplex'`. |
+| `halfDuplexTailMs` | `number` | Extra mic-gate time after agent audio drains (halfDuplex only, default 250). |
 | `reconnect` | `{ maxAttempts?, baseDelayMs?, maxDelayMs?, jitter? }` | Default 6 attempts, 0.5 s → 10 s, ±30 %. |
 
-Callbacks: `onState(state)`, `onTranscript(role, text)`.
+Callbacks: `onState(state)`, `onTranscript(role, text)`,
+`onLevel(dbfs)` (mic level per 20 ms frame, ≈ −90…0 — drive a VU meter or a
+"we can't hear you" hint when it stays ≤ −70 while the user speaks).
 Methods: `start(): Promise<void>`, `stop()`, `setMuted(boolean)`.
+
+### Turn-taking: duplex vs half-duplex
+
+- **`'duplex'` (default)** — full duplex with **barge-in**: the caller can
+  interrupt the agent mid-sentence, exactly like the dashboard's browser test
+  call. Relies on the device's echo cancellation (real phones have it).
+- **`'halfDuplex'`** — the mic is **gated while agent audio plays** (+ tail),
+  so the agent can never hear its own voice. No barge-in. Use it wherever AEC
+  doesn't exist or can't keep up: **Android emulators** (no AEC at all!),
+  kiosk loudspeakers, cheap conference speakers.
+
+```ts
+new TelenowCall({ session, turnTaking: 'halfDuplex' }); // echo-proof mode
+```
+
+Rule of thumb: if transcripts show the agent's own words coming back as user
+speech, or "Hello?" loops appear while the agent is talking — that's echo.
+Test on a real device, or switch to `halfDuplex`.
 
 ### What the SDK handles
 
@@ -100,6 +123,8 @@ The native module (`TelenowAudio`) is autolinked via the bundled podspec and
 | `TelenowAudio is null` / invariant violation | Autolinking didn't run: re-run `pod install` (iOS) / a clean Gradle sync (Android), then rebuild the app — a JS-only reload isn't enough after install. |
 | Silent call on Android | `RECORD_AUDIO` runtime permission wasn't granted before `start()`. |
 | Silent call on iOS simulator | Test audio on a **real device**; simulator audio routing is unreliable. |
+| Agent transcribes itself / "Hello?" loops / "didn't catch that" while frames flow | Echo: the agent's voice loops back into the mic. **Emulators have no echo cancellation** — use a real device or set `turnTaking: 'halfDuplex'`. |
+| User speech only reaches −40…−60 dBFS (`onLevel`) | Mic gain too low — OS mic privacy toggle, distant mic, or emulator host audio. Surface a "speak closer" hint off `onLevel`. |
 | 401/403 at start | Bad/expired token, or API access disabled on the agent's Publish tab. |
 | 400 naming a variable | A required context variable wasn't passed (or bake variables into the backend-minted session). |
 | Echo when on speaker | Don't play agent audio through a separate player — keep the SDK's playback path (it runs through the echo canceller). |

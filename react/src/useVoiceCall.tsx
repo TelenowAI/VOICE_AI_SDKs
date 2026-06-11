@@ -7,9 +7,10 @@ import {
   type ReconnectPolicy,
   type TelenowSession,
   type TranscriptLine,
+  type TurnTaking,
 } from '@telenow/client';
 
-export type { CallState, TranscriptLine, TelenowSession };
+export type { CallState, TranscriptLine, TelenowSession, TurnTaking };
 
 export interface UseVoiceCallOptions {
   /** Ephemeral client token (Authorization: Bearer) for init-web-call. */
@@ -30,6 +31,11 @@ export interface UseVoiceCallOptions {
     noiseSuppression?: boolean;
     autoGainControl?: boolean;
   };
+  /**
+   * 'duplex' (default) = barge-in enabled; 'halfDuplex' = mic gated while the
+   * agent speaks (for devices without echo cancellation).
+   */
+  turnTaking?: TurnTaking;
   /** Reconnect tuning: maxAttempts, baseDelayMs, maxDelayMs, jitter. */
   reconnect?: ReconnectPolicy;
 }
@@ -62,6 +68,7 @@ export function useVoiceCall(opts: UseVoiceCallOptions) {
       baseUrl: o.baseUrl,
       variables: o.variables,
       audio: o.audio,
+      turnTaking: o.turnTaking,
       reconnect: o.reconnect,
       onState: setState,
       onTranscript: (line) => setTranscript((t) => [...t, line]),

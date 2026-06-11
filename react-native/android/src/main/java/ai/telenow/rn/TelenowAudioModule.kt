@@ -7,6 +7,10 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Base64
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
@@ -21,6 +25,7 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
   @Volatile private var muted = false
   private var record: AudioRecord? = null
   private var track: AudioTrack? = null
+  private var effects: MutableList<AudioEffect> = mutableListOf()
 
   private fun emit(b64: String) {
     ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
@@ -51,7 +56,7 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
   }
 
   @ReactMethod
-  fun startCapture(rate: Int) {
+  fun startCapture(rate: Int, echoCancellation: Boolean, noiseSuppression: Boolean, autoGainControl: Boolean) {
     val frame = rate * 20 / 1000
     val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
     record = AudioRecord(
@@ -59,6 +64,20 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
       rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
       maxOf(minBuf, frame * 2) * 2,
     )
+    // Explicit voice-processing toggles. Effects are hardware-dependent —
+    // create() returns null where unsupported (notably emulators), in which
+    // case the platform's VOICE_COMMUNICATION defaults still apply.
+    record?.audioSessionId?.let { sid ->
+      if (AcousticEchoCanceler.isAvailable()) {
+        AcousticEchoCanceler.create(sid)?.also { it.enabled = echoCancellation; effects.add(it) }
+      }
+      if (NoiseSuppressor.isAvailable()) {
+        NoiseSuppressor.create(sid)?.also { it.enabled = noiseSuppression; effects.add(it) }
+      }
+      if (AutomaticGainControl.isAvailable()) {
+        AutomaticGainControl.create(sid)?.also { it.enabled = autoGainControl; effects.add(it) }
+      }
+    }
     record?.startRecording()
     recording = true
     thread {
@@ -97,6 +116,7 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
   @ReactMethod
   fun stop() {
     recording = false
+    effects.forEach { runCatching { it.release() } }; effects.clear()
     record?.let { it.stop(); it.release() }; record = null
     track?.let { it.stop(); it.release() }; track = null
   }

@@ -84,6 +84,8 @@ you never handle protocol events yourself.
 | `audio.noiseSuppression` | `boolean` | `true` | Browser noise suppression. |
 | `audio.autoGainControl` | `boolean` | `false` | Off by default — AGC clips loud speech and hurts transcription. |
 | `audio.deviceId` | `string` | system default | Pick a specific microphone (`enumerateDevices()`). |
+| `turnTaking` | `'duplex' \| 'halfDuplex'` | `'duplex'` | See **Turn-taking** below. |
+| `halfDuplexTailMs` | `number` | 250 | Extra mic-gate time after agent audio drains (halfDuplex only). |
 | `reconnect.maxAttempts` | `number` | 6 | Reconnect attempts before giving up. |
 | `reconnect.baseDelayMs` / `maxDelayMs` | `number` | 500 / 10000 | Exponential backoff window. |
 | `reconnect.jitter` | `number` | 0.3 | ± randomization on each delay. |
@@ -95,6 +97,25 @@ you never handle protocol events yourself.
 Methods: `start(): Promise<void>` (throws on failure, also surfaces via
 `onError`), `stop()`, `setMuted(boolean)`, `sendText(text, { chat? }): boolean`
 (false when the socket isn't open). Getters: `state`, `muted`, `sessionId`.
+
+## Turn-taking: duplex vs half-duplex
+
+- **`'duplex'` (default)** — full duplex with **barge-in**: the caller can
+  interrupt the agent mid-sentence and queued agent audio is flushed
+  instantly — the same behavior as the dashboard's browser test call. This
+  relies on echo cancellation so the agent doesn't hear itself.
+- **`'halfDuplex'`** — the mic is **gated while agent audio is queued/playing**
+  (plus `halfDuplexTailMs`). The agent can never hear its own voice, at the
+  cost of barge-in. Use it where echo cancellation doesn't exist or can't
+  keep up: **emulators**, kiosk loudspeakers, cheap conference speakers.
+
+```ts
+new TelenowCall({ session, turnTaking: 'halfDuplex' }); // echo-proof mode
+```
+
+Rule of thumb: if transcripts show the agent's own words coming back as user
+speech (or "Hello?" loops while the agent talks), switch to `halfDuplex` or
+fix the device's AEC.
 
 ## How the audio path works
 
@@ -118,7 +139,7 @@ Methods: `start(): Promise<void>` (throws on failure, also surfaces via
 | `start()` rejects with `session init failed (HTTP 401/403)` | Bad/expired token, or the agent's API access is disabled (agent → Publish tab). |
 | `…(HTTP 400)` mentioning a variable | The agent requires [context variables](https://telenow.ai/docs/context-variables) you didn't pass. |
 | Connects but no agent audio | `start()` not triggered by a user gesture (autoplay policy) — bind it to a click. |
-| Agent hears itself / echo | You disabled `echoCancellation`. Leave it on. |
+| Agent hears itself / echo / "Hello?" loops while it speaks | AEC is off or the device has none (emulators!). Keep `echoCancellation: true`, or set `turnTaking: 'halfDuplex'`. |
 | State stuck `reconnecting` then `ended` | Network is down or the session expired server-side; start a new call. |
 
 ## Advanced: build your own pipeline

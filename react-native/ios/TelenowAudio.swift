@@ -25,11 +25,20 @@ class TelenowAudio: RCTEventEmitter {
     player.play()
   }
 
-  @objc(startCapture:)
-  func startCapture(_ rate: NSNumber) {
+  @objc(startCapture:echoCancellation:noiseSuppression:autoGainControl:)
+  func startCapture(
+    _ rate: NSNumber,
+    echoCancellation: Bool,
+    noiseSuppression: Bool,
+    autoGainControl: Bool
+  ) {
+    _ = autoGainControl // iOS manages AGC inside voice processing; no separate toggle
     captureRate = rate.doubleValue
     let session = AVAudioSession.sharedInstance()
-    try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+    // .voiceChat enables Apple's voice processing (AEC + NS together).
+    // Turning BOTH toggles off opts out of voice processing entirely.
+    let mode: AVAudioSession.Mode = (echoCancellation || noiseSuppression) ? .voiceChat : .default
+    try? session.setCategory(.playAndRecord, mode: mode, options: [.defaultToSpeaker, .allowBluetooth])
     try? session.setActive(true)
     let input = engine.inputNode
     let inFormat = input.outputFormat(forBus: 0)

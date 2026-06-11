@@ -14,6 +14,7 @@ import {
   pcm16ToMulaw,
   bytesToBase64,
   base64ToBytes,
+  rmsDbfs,
   ReconnectingSocket,
 } from '@telenow/client';
 
@@ -33,6 +34,26 @@ export interface TelenowCallOptions {
   baseUrl?: string;
   variables?: Record<string, string>;
   uplinkEncoding?: 'pcm16' | 'mulaw';
+  /**
+   * Voice-processing toggles, applied to the native capture session.
+   * Defaults: echoCancellation true, noiseSuppression true, autoGainControl false.
+   * Android: AcousticEchoCanceler / NoiseSuppressor / AutomaticGainControl
+   * effects (hardware-dependent — no-ops where the device lacks them).
+   * iOS: echoCancellation/noiseSuppression ride together via the voice-chat
+   * audio session; autoGainControl is managed by the OS.
+   */
+  audio?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean };
+  /**
+   * 'duplex' (default): full duplex with barge-in — the caller can interrupt
+   * the agent, exactly like the dashboard browser test call. Needs working
+   * echo cancellation (real devices have it; EMULATORS DO NOT).
+   * 'halfDuplex': the mic is gated while agent audio plays (+ a short tail),
+   * so the agent can never hear itself — use on emulators, kiosk speakers, or
+   * any hardware without AEC. Trade-off: no barge-in.
+   */
+  turnTaking?: 'duplex' | 'halfDuplex';
+  /** Extra mic-gate time after agent audio drains in halfDuplex mode (ms, default 250). */
+  halfDuplexTailMs?: number;
   reconnect?: { maxAttempts?: number; baseDelayMs?: number; maxDelayMs?: number; jitter?: number };
 }
 
@@ -43,8 +64,12 @@ export class TelenowCall {
   private micSub?: { remove: () => void };
   private ended = false;
   private readonly uplinkRate: number;
+  /** Wall-clock ms until which queued agent audio is still playing (halfDuplex gate). */
+  private playUntil = 0;
   onState?: (s: CallState) => void;
   onTranscript?: (role: string, text: string) => void;
+  /** Mic level per 20 ms frame, dBFS (≈ −90…0) — drive a VU meter. */
+  onLevel?: (dbfs: number) => void;
 
   constructor(private readonly opts: TelenowCallOptions) {
     this.uplinkRate = opts.uplinkEncoding === 'pcm16' ? 16000 : 8000;
@@ -78,12 +103,26 @@ export class TelenowCall {
     });
     this.socket.open();
 
-    await Native.startCapture(this.uplinkRate);
+    const audio = this.opts.audio ?? {};
+    await Native.startCapture(
+      this.uplinkRate,
+      audio.echoCancellation ?? true,
+      audio.noiseSuppression ?? true,
+      audio.autoGainControl ?? false,
+    );
     this.micSub = emitter.addListener('TelenowMicFrame', (b64: string) => {
       const shorts = leBytesToInt16(base64ToBytes(b64));
+      this.onLevel?.(rmsDbfs(shorts));
+      if (this.micGated()) return; // halfDuplex: agent is speaking
       const out = this.opts.uplinkEncoding === 'pcm16' ? int16ToLEBytes(shorts) : pcm16ToMulaw(shorts);
       this.socket?.send(JSON.stringify({ event: 'media', data: bytesToBase64(out) }));
     });
+  }
+
+  /** halfDuplex mic gate — closed while agent audio is queued/playing (+tail). */
+  private micGated(): boolean {
+    if (this.opts.turnTaking !== 'halfDuplex') return false;
+    return Date.now() < this.playUntil + (this.opts.halfDuplexTailMs ?? 250);
   }
 
   setMuted(muted: boolean): void {
@@ -137,10 +176,14 @@ export class TelenowCall {
       if (!pcm.length) return;
       const d = this.jitter.schedule(this.clock, pcm.length / rate, this.clock);
       this.clock = Math.max(this.clock, d.startAt);
+      // Track how long the queued agent audio will keep playing (halfDuplex gate).
+      const durMs = (pcm.length / rate) * 1000;
+      this.playUntil = Math.max(this.playUntil, Date.now()) + durMs;
       Native.playPcm(bytesToBase64(int16ToLEBytes(pcm)), rate);
     } else if (m.event === 'clear') {
       // Barge-in: drop queued agent audio immediately.
       this.clock = 0;
+      this.playUntil = 0;
       this.jitter.reset();
       Native.clearPlayback?.();
     } else if (m.event === 'ping') {

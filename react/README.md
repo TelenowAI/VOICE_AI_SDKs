@@ -70,6 +70,7 @@ The hook tears the call down automatically when the component unmounts.
 | `baseUrl` | `string` | API origin when the hook does its own init (default same-origin). |
 | `variables` | `Record<string,string>` | [Context variables](https://telenow.ai/docs/context-variables); required ones must be present. |
 | `audio` | `{ encoding?, targetSampleRate?, echoCancellation?, noiseSuppression?, autoGainControl? }` | Defaults: μ-law 8 kHz, AEC + NS **on**, AGC off. Keep them. |
+| `turnTaking` | `'duplex' \| 'halfDuplex'` | `'duplex'` (default) = barge-in enabled, like the dashboard test call. `'halfDuplex'` = mic gated while the agent speaks — for devices **without echo cancellation** (emulators, loud speakers). |
 | `reconnect` | `{ maxAttempts?, baseDelayMs?, maxDelayMs?, jitter? }` | Default 6 attempts, 0.5 s → 10 s, ±30 % jitter. |
 
 ### Returns

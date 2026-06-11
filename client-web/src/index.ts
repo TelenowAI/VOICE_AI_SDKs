@@ -7,6 +7,7 @@ export type {
   CallState,
   TranscriptLine,
   MediaAdapter,
+  TurnTaking,
 } from './call.js';
 export * from './pcm.js';
 export * from './jitterBuffer.js';

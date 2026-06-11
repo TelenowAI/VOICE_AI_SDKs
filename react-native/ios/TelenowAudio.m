@@ -6,7 +6,10 @@
 @interface RCT_EXTERN_MODULE (TelenowAudio, RCTEventEmitter)
 
 RCT_EXTERN_METHOD(startPlayback : (nonnull NSNumber *)rate)
-RCT_EXTERN_METHOD(startCapture : (nonnull NSNumber *)rate)
+RCT_EXTERN_METHOD(startCapture : (nonnull NSNumber *)rate
+                  echoCancellation : (BOOL)echoCancellation
+                  noiseSuppression : (BOOL)noiseSuppression
+                  autoGainControl : (BOOL)autoGainControl)
 RCT_EXTERN_METHOD(playPcm : (NSString *)b64 rate : (nonnull NSNumber *)rate)
 RCT_EXTERN_METHOD(clearPlayback)
 RCT_EXTERN_METHOD(setMuted : (BOOL)muted)

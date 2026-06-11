@@ -44,7 +44,21 @@ export interface MediaAdapter {
   clear(): void;
   setMuted(muted: boolean): void;
   stop(): void;
+  /** Seconds of agent audio still queued/playing — drives half-duplex gating. */
+  bufferedSec?(): number;
 }
+
+/**
+ * Turn-taking policy.
+ * - 'duplex' (default): full duplex with barge-in — the caller can interrupt
+ *   the agent mid-sentence, exactly like the dashboard's browser test call.
+ *   Relies on echo cancellation so the agent doesn't hear itself.
+ * - 'halfDuplex': the mic is gated while agent audio is queued/playing (plus a
+ *   short tail). Use on hardware WITHOUT echo cancellation — emulators, kiosk
+ *   loudspeakers, cheap speakerphones — where the agent's own voice would loop
+ *   back into the mic. Trade-off: the caller cannot barge in.
+ */
+export type TurnTaking = 'duplex' | 'halfDuplex';
 
 export interface TelenowCallOptions {
   /** Ephemeral client token — sent as `Authorization: Bearer` to init-web-call. */
@@ -62,6 +76,14 @@ export interface TelenowCallOptions {
   /** Context variables for the agent prompt (token path bakes its own). */
   variables?: Record<string, string>;
   audio?: CallAudioOptions;
+  /**
+   * 'duplex' (default) = barge-in enabled, like the dashboard browser call.
+   * 'halfDuplex' = mic gated while the agent speaks — for devices without
+   * echo cancellation (emulators, loud speakerphones). See {@link TurnTaking}.
+   */
+  turnTaking?: TurnTaking;
+  /** Extra mic-gate time after agent audio drains in halfDuplex mode (ms, default 250). */
+  halfDuplexTailMs?: number;
   reconnect?: ReconnectPolicy;
   onState?: (state: CallState) => void;
   onTranscript?: (line: TranscriptLine) => void;
@@ -116,6 +138,10 @@ class BrowserMedia implements MediaAdapter {
   setMuted(muted: boolean): void {
     this.muted = muted;
     this.capture?.setMuted(muted);
+  }
+
+  bufferedSec(): number {
+    return this.playback?.bufferedSec() ?? 0;
   }
 
   stop(): void {
@@ -181,6 +207,7 @@ export class TelenowCall {
       this.socket = socket;
       socket.open();
       await this.media.start((b64) => {
+        if (this.micGated()) return; // halfDuplex: agent is speaking
         this.socket?.send(JSON.stringify({ event: 'media', data: b64 }));
       }, this.opts.onLevel);
     } catch (err) {
@@ -211,6 +238,21 @@ export class TelenowCall {
         JSON.stringify({ event: 'text', text, ...(opts?.chat ? { chat: true } : {}) }),
       ) ?? false
     );
+  }
+
+  /**
+   * halfDuplex mic gate: closed while agent audio is queued/playing, and for
+   * a short tail afterwards (room reverb + STT boundary). Frames dropped here
+   * never reach the server, so its VAD sees clean silence between agent turns.
+   */
+  private gateUntil = 0;
+  private micGated(): boolean {
+    if (this.opts.turnTaking !== 'halfDuplex') return false;
+    const buffered = this.media.bufferedSec?.() ?? 0;
+    const now = Date.now();
+    const tail = this.opts.halfDuplexTailMs ?? 250;
+    if (buffered > 0.02) this.gateUntil = now + buffered * 1000 + tail;
+    return now < this.gateUntil;
   }
 
   private setState(s: CallState): void {
