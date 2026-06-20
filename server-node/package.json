@@ -1,6 +1,6 @@
 {
   "name": "@telenow/server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Telenow voice AI SDK for Node, Bun, Deno & edge — place AI agent phone calls, mint browser/app call sessions, transfer & end live calls, verify webhooks, and build custom-LLM streaming (SSE) endpoints. Zero dependencies.",
   "type": "module",
   "main": "./dist/index.js",

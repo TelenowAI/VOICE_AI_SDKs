@@ -79,15 +79,27 @@ paths:
   /api/sessions/{id}:
     delete:
       operationId: endSession
-      summary: End a session.
+      summary: End a session (hang up). API key or user JWT.
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       responses:
         '200': { description: Ended }
+        '404': { $ref: '#/components/responses/Error' }
 
   /api/sessions/init-web-call:
     post:
       operationId: initWebCall
-      summary: Initialize a browser/app call. Authorize with a client token (Bearer) or API key.
+      summary: Initialize a browser/app call (AI agent), or bridge a manual/softphone telephony call.
+      description: >
+        Two modes. **Agent mode** (`mode` omitted/`"agent"`) starts an AI web
+        session — the orchestrator drives STT→LLM→TTS. **Manual mode**
+        (`mode: "manual"`) places a softphone telephony call: Telenow rings
+        `toNumber` from your org's `fromNumber` caller-ID and bridges the carrier
+        leg to a human on a browser/app — no AI, no STT/LLM/TTS. Both return
+        `{ sessionId, websocketUrl }`; connect a client SDK to `websocketUrl` as
+        the agent's (agent mode) or human's (manual mode) audio leg. Recordings
+        and webhooks (`call.started`, `call.ended`, `recording.ready`) fire in
+        both modes. Authorize with a client token (Bearer) or API key.
       security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       requestBody:
         content:
@@ -95,11 +107,29 @@ paths:
             schema:
               type: object
               properties:
-                agentId: { type: string }
+                mode:
+                  type: string
+                  enum: ['agent', 'manual']
+                  default: agent
+                  description: '`agent` = AI web session. `manual` = softphone telephony bridge.'
+                agentId:
+                  type: string
+                  description: Required for agent mode; ignored in manual mode.
+                fromNumber:
+                  type: string
+                  example: '+15550001111'
+                  description: >
+                    Manual mode caller-ID — an E.164 number your org owns
+                    (Numbers / BYOC / SIP). Required with an API key; on a
+                    user JWT it defaults to the member's allocated number.
+                toNumber:
+                  type: string
+                  example: '+15551234567'
+                  description: Manual mode — destination to ring (E.164).
                 variables: { type: object, additionalProperties: { type: string } }
                 identifier:
                   type: string
-                  description: Trusted caller identifier, injected into tool calls when the agent opts in.
+                  description: Trusted caller identifier, injected into tool calls when the agent opts in (agent mode).
                 userId: { type: string, format: uuid }
       responses:
         '200':
@@ -293,6 +323,68 @@ paths:
         '200': { description: Call object with transcript array }
         '404': { $ref: '#/components/responses/Error' }
 
+  /api/v1/chat:
+    post:
+      operationId: chatSend
+      summary: Send one text-chat turn to an agent (creates the session on the first call).
+      description: >
+        Text conversation with an agent — same brain, knowledge bases (RAG) and
+        HTTP tools as a voice call, no audio. Omit `sessionId` on the first turn
+        (the response returns one); pass it on follow-ups. Flat JSON. A `410`
+        means the session expired — resend the same message WITHOUT `sessionId`.
+        A `409` means a reply is still generating — wait, then retry.
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+      responses:
+        '200':
+          description: Agent reply
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatReply' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409':
+          description: '`{ "error": "turn in progress" }` — a reply is still generating; retry.'
+        '410':
+          description: '`{ "error": "session expired", "code": "SESSION_EXPIRED" }` — resend without sessionId.'
+
+  /api/v1/chat/{id}/messages:
+    get:
+      operationId: chatMessages
+      summary: Full user/assistant transcript of a chat session.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Transcript
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatTranscript' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/chat/{id}/end:
+    post:
+      operationId: chatEnd
+      summary: End a chat session (idempotent) — settles billing + triggers analysis.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId: { type: string, format: uuid }
+                  ended: { type: boolean, example: true }
+        '404': { $ref: '#/components/responses/Error' }
+
   /api/v1/events/sample:
     get:
       operationId: sampleEvent
@@ -383,6 +475,45 @@ components:
         include_recording: { type: boolean, default: false }
         include_transcript: { type: boolean, default: false }
         source: { type: string, description: 'Platform label: zapier | make | n8n | viasocket | …' }
+    ChatRequest:
+      type: object
+      required: [agentId, identifier, input]
+      properties:
+        agentId: { type: string, format: uuid, description: 'Must belong to your org and be active.' }
+        identifier:
+          type: string
+          maxLength: 128
+          example: user-42
+          description: 'Your stable end-user id (1–128 chars). Binds the session.'
+        input: { type: string, example: 'Hello!', description: "The user's message." }
+        sessionId:
+          type: string
+          format: uuid
+          description: 'Omit on the first turn; send the returned id on follow-ups.'
+        variables:
+          type: object
+          additionalProperties: { type: string }
+          description: 'Context variables — first message of a session only.'
+    ChatReply:
+      type: object
+      properties:
+        sessionId: { type: string, format: uuid }
+        reply: { type: string, description: "The agent's full reply (tool calls resolved)." }
+        turn: { type: integer, description: 'User turns this session has seen (1-based).' }
+        identifier: { type: string }
+    ChatMessage:
+      type: object
+      properties:
+        role: { type: string, example: assistant }
+        content: { type: string }
+        createdAt: { type: string, format: date-time }
+    ChatTranscript:
+      type: object
+      properties:
+        sessionId: { type: string, format: uuid }
+        messages:
+          type: array
+          items: { $ref: '#/components/schemas/ChatMessage' }
     ClientTokenRequest:
       type: object
       required: [agentId]
@@ -432,6 +563,12 @@ components:
         sessionId: { type: string }
         websocketUrl: { type: string, example: 'wss://api.telenow.ai/ws/web-agent' }
         status: { type: string }
+        embedSnippet: { type: string, description: 'Agent-mode only: ready-to-paste WebAgentWidget embed script.' }
+        # Manual/softphone mode (mode: "manual") additionally returns:
+        callId: { type: string, description: 'Carrier call id (manual mode).' }
+        callMode: { type: string, example: manual, description: '"manual" for softphone bridges.' }
+        fromNumber: { type: string, description: 'Resolved caller-ID (manual mode).' }
+        toNumber: { type: string, description: 'Dialed destination (manual mode).' }
     Agent:
       type: object
       description: Agent config (loosely typed here; see the product docs for the full shape).

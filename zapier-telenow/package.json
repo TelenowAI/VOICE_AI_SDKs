@@ -1,6 +1,6 @@
 {
   "name": "telenow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Telenow voice-AI integration for Zapier: trigger Zaps on call events, place outbound AI agent calls.",
   "main": "index.js",
   "scripts": {
@@ -11,7 +11,7 @@
     "npm": ">=9"
   },
   "dependencies": {
-    "zapier-platform-core": "^17.0.0"
+    "zapier-platform-core": "19.0.0"
   },
   "private": true
 }

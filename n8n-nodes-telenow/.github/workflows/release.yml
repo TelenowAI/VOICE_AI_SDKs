@@ -21,7 +21,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # n8n-workflow 2.x → @n8n/expression-runtime → isolated-vm needs
+          # Node >= 22 to compile; Node 20 fails the npm ci native build.
+          node-version: 22
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
       - run: npm run build

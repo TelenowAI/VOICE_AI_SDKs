@@ -14,6 +14,12 @@ module.exports = {
 
   authentication,
 
+  // Our endpoints already return clean, predictable JSON, so let the raw
+  // payload through instead of Zapier's automatic input-data cleaning.
+  flags: {
+    cleanInputData: false,
+  },
+
   beforeRequest: [includeApiKey],
   afterResponse: [handleErrors],
 

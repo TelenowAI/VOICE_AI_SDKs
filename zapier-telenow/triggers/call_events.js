@@ -53,7 +53,7 @@ const callStarted = buildHookTrigger({
   event: 'call.started',
   noun: 'Call',
   label: 'Call Started',
-  description: 'Triggers the moment a call becomes active.',
+  description: 'Triggers when a call becomes active.',
   sample: {
     event: 'call.started',
     sessionId: SID,
@@ -127,7 +127,7 @@ const toolInvoked = buildHookTrigger({
   event: 'tool.invoked',
   noun: 'Tool Call',
   label: 'Tool Invoked',
-  description: 'Triggers each time the AI agent calls one of its tools during a conversation.',
+  description: 'Triggers when the AI agent calls one of its tools during a conversation.',
   sample: {
     event: 'tool.invoked',
     sessionId: SID,

@@ -20,15 +20,17 @@ TELENOW_BASE_URL=http://localhost:3005 TELENOW_API_KEY=vai_live_… npm test
 
 ```bash
 npm i -g zapier-platform-cli
-zapier login                 # Zapier account that will own the integration
-zapier register "Telenow"    # once; writes .zapierapprc (gitignored)
-zapier push                  # build + upload this version
-zapier users:add user@example.com 1.0.0   # invite customers to the PRIVATE app
+# NOTE: zapier-platform-cli v19+ renamed the binary `zapier` → `zapier-platform`.
+# (Optional convenience: alias zapier=zapier-platform)
+zapier-platform login                 # Zapier account that will own the integration (deploy-key flow)
+zapier-platform register "Telenow"    # once; writes .zapierapprc (gitignored)
+zapier-platform push                  # build + upload this version
+zapier-platform users:add user@example.com 1.0.0   # invite customers to the PRIVATE app
 ```
 
 A **private** app is immediately usable by invited customers — no review. For the **public** listing:
 
-1. `zapier promote 1.0.0`, then submit for review.
+1. `zapier-platform promote 1.0.0`, then submit for review.
 2. Review needs: production HTTPS API, public docs (https://telenow.ai/docs), a working test account for `integration-testing@zapier.com`, an admin team member with an email on the telenow.ai domain, and ≥1 successful Zap-history run per trigger/action/search.
 3. After approval the app carries a "Beta" tag (~90 days); it flips to full public automatically at 50 active users + 10 published Zap templates.
 

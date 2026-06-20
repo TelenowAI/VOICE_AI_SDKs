@@ -69,6 +69,17 @@ When the **agent** ends the call (or your backend calls `calls.end()`), the
 SDK receives `session_end`, tears down audio, and fires `onState('ended')` —
 you never handle protocol events yourself.
 
+### Softphone (manual telephony) calls
+
+The same object also drives a **softphone**: when your backend mints a
+[manual call](https://telenow.ai/docs/sdk-server#manual--softphone-calls)
+(`tn.calls.createManual({ from, to })`, no AI in the loop), it returns the same
+`{ sessionId, websocketUrl }`. Pass it to `TelenowCall({ session })` and the
+browser becomes the **human rep's** mic + speaker, bridged to the customer over
+the carrier — ideal for click-to-call inside a CRM. Controls are identical
+(`setMuted`, `stop`); there are no agent transcripts (a person is talking, not
+the AI).
+
 ## `TelenowCall` options
 
 | Option | Type | Default | What it does |

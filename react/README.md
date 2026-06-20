@@ -22,6 +22,12 @@ npm install @telenow/react @telenow/client react
 3. Serve over `https://` (or `localhost`) — required for mic access — and call
    `start()` from a click (autoplay policy).
 
+> **Softphone / click-to-call:** the same `session` prop also drives a **human**
+> call. If your backend mints a [manual call](https://telenow.ai/docs/sdk-server#manual--softphone-calls)
+> (`calls.createManual({ from, to })` — no AI), pass the returned
+> `{ sessionId, websocketUrl }` to `useVoiceCall` and this component becomes the
+> rep's softphone, bridged to the customer over the carrier.
+
 ## Quickstart
 
 ```tsx

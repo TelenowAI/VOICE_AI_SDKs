@@ -52,6 +52,45 @@ tn.transfer_call(session_id, "+15557654321")   # warm transfer to a human
 tn.end_call(session_id)                        # hang up
 ```
 
+## Manual / softphone calls (embed click-to-call in your CRM)
+
+Place a **human** call, not an AI one: Telenow rings `to` from your org's
+`from_number` caller-ID and bridges the carrier leg to a **softphone** in the
+browser/app. No AI, STT, LLM, or TTS — a person is on the line. This is the
+building block for **click-to-call inside a CRM**.
+
+```python
+# 1) Your backend mints the softphone session (API key stays server-side).
+@app.post("/crm/dial")
+async def crm_dial(req: DialRequest):
+    return tn.create_manual_call(
+        req.customer_phone,           # E.164 number to ring
+        from_number="+15550001111",   # your org's caller-ID (Numbers / BYOC / SIP)
+        user_id=req.agent_user_id,    # optional: who placed the call (attribution)
+    )
+    # → {"sessionId", "websocketUrl", "callId", "callMode": "manual", "fromNumber", "toNumber"}
+```
+
+```ts
+// 2) Your frontend connects the softphone — the rep's mic + speaker.
+import { TelenowCall } from '@telenow/client';
+const session = await fetch('/crm/dial', { method: 'POST', /* … */ }).then((r) => r.json());
+await new TelenowCall({ session }).start();   // mic permission → bridged to the customer
+```
+
+| `create_manual_call` arg | Required | What it does |
+|---|---|---|
+| `to` (first arg) | ✓ | Destination number to ring, E.164. |
+| `from_number` | ✓ with an API key | Caller-ID — an E.164 number your org owns (Numbers / BYOC / SIP trunk). On a user JWT it defaults to the member's allocated number. |
+| `user_id` | — | Attribution: the CRM user placing the call. |
+
+Manual calls are **recorded server-side** (both legs mixed) and fire the same
+[webhooks](https://telenow.ai/docs/webhook-events) as AI calls — so `call.ended`
+/ `recording.ready` deliver the recording URL and call data straight to your CRM
+(see **Webhooks** below). Works on every carrier — Plivo, Twilio, Vobiz, Exotel,
+Vonage, and SIP trunks. `transfer_call`/`end_call` accept the returned
+`sessionId` too.
+
 ## Web calls (mint a session for your frontend)
 
 The recommended browser/app flow: mint here, hand the result to the client,
@@ -69,6 +108,38 @@ async def voice_session():
     # → {"sessionId": ..., "websocketUrl": ...}  → TelenowCall({ session })
 ```
 
+## Text chat (Chat API)
+
+Run a **text conversation** with an agent — same brain, knowledge bases (RAG)
+and HTTP tools as a voice call, no audio, no RAG pipeline of your own. Chats
+settle as `chat` calls in history and fire the same webhooks as voice.
+
+Omit `session_id` on the first turn (one is created + returned), then pass it on
+follow-ups. `identifier` is your stable end-user id (binds the session). A `410`
+raises `TelenowError` (session expired — resend **without** `session_id`); `409`
+means a reply is still generating (wait, retry).
+
+```python
+first = tn.chat("AGENT_UUID", "user-42", "Hello!")        # → {"sessionId", "reply", "turn", ...}
+nxt   = tn.chat("AGENT_UUID", "user-42", "More", session_id=first["sessionId"])
+msgs  = tn.chat_messages(first["sessionId"])["messages"]   # full transcript
+tn.chat_end(first["sessionId"])                            # settle now (idempotent)
+```
+
+Or let the **send-loop helper** hold the `session_id`, restart on `410`, and
+wait out `409` for you — one per end user:
+
+```python
+convo = tn.chat_conversation("AGENT_UUID", "user-42", variables={"plan": "Pro"})
+a = convo.send("Hello!")                # turn 1
+b = convo.send("What are your hours?")  # turn 2 (or a transparent restart)
+convo.end()
+```
+
+Replies are synchronous (return when the agent's full reply, incl. tool calls,
+is ready) — use a 60 s+ timeout, and send one turn at a time per `session_id`.
+Full reference: [Chat API](https://telenow.ai/docs/api-chat).
+
 ## Webhooks
 
 Telenow signs every delivery with `X-VoiceAI-Signature: sha256=<hex>`
@@ -81,8 +152,8 @@ from telenow.django import telenow_webhook
 
 @telenow_webhook(secret=settings.TELENOW_WEBHOOK_SECRET)
 def hook(request, event):                  # signature verified, body parsed
-    if event["event"] == "call.ended":     # also: call.started, transcript.ready, tool.invoked
-        ...
+    if event["event"] == "call.ended":     # also: call.started, recording.ready,
+        ...                                #       transcript.ready, tool.invoked
     return HttpResponse(status=200)
 ```
 
@@ -100,8 +171,11 @@ async def hook(request: Request):
     ...
 ```
 
-Configure endpoints + events in the dashboard (Webhooks), per agent or
-org-wide. Payload shapes:
+Configure endpoints + events in the dashboard (Webhooks) or the REST-hooks API,
+per agent or org-wide; tick **include recording** to get the signed recording
+URL on `call.ended`. These fire for **AI agent calls, web calls, and
+[manual/softphone](#manual--softphone-calls-embed-click-to-call-in-your-crm)
+calls alike**. Payload shapes:
 [webhook events reference](https://telenow.ai/docs/webhook-events).
 
 ## Custom API — stream your own LLM into calls

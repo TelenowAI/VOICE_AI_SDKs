@@ -68,12 +68,77 @@ export interface CallResult {
   phoneNumber?: string;
 }
 
+export interface CreateManualCallRequest {
+  /** Destination phone number to ring, E.164. */
+  to: string;
+  /**
+   * Caller-ID: an E.164 number your org owns (Numbers page / BYOC / SIP trunk).
+   * **Required when authenticating with an API key** (server-to-server, e.g.
+   * from a CRM). Omit only on a dashboard-user JWT, where it defaults to the
+   * member's allocated number.
+   */
+  from?: string;
+  /** Attribution: the CRM/dashboard user placing the call. Defaults to the key's creator. */
+  userId?: string;
+}
+/**
+ * A manual/softphone session. Hand `{ sessionId, websocketUrl }` to a client
+ * SDK (`TelenowCall({ session })`) — that browser/app becomes the human leg.
+ */
+export interface ManualCallSession {
+  sessionId: string;
+  /** Connect a client SDK to this URL as the human softphone leg. */
+  websocketUrl: string;
+  callId?: string;
+  callMode?: string;
+  fromNumber?: string;
+  toNumber?: string;
+  status?: string;
+}
+
 export interface InitWebCallRequest {
   agentId: string;
   variables?: Record<string, string>;
   /** Trusted caller identifier, injected into tool calls when the agent opts in. */
   identifier?: string;
   userId?: string;
+}
+
+export interface ChatSendRequest {
+  agentId: string;
+  /**
+   * Your stable id for the end user (1–128 chars). Binds the session to that
+   * user, so a leaked `sessionId` can't be reused by anyone else. Must stay the
+   * same across the whole conversation.
+   */
+  identifier: string;
+  /** The user's message for this turn. */
+  input: string;
+  /**
+   * Omit on the **first** turn — the server creates a session and returns its
+   * id. Pass that id on every follow-up to keep context. On a `410` (session
+   * expired), resend WITHOUT `sessionId` to start fresh.
+   */
+  sessionId?: string;
+  /** Context variables — honored on the **first** message of a session only. */
+  variables?: Record<string, string>;
+}
+export interface ChatReply {
+  sessionId: string;
+  /** The agent's full reply (tool calls already resolved). */
+  reply: string;
+  /** Running count of user turns this session has seen (1-based). */
+  turn: number;
+  identifier: string;
+}
+export interface ChatMessage {
+  role: string;
+  content: string;
+  createdAt: string;
+}
+export interface ChatTranscript {
+  sessionId: string;
+  messages: ChatMessage[];
 }
 /**
  * Hand this to the browser/app: the client SDKs accept it as `session` and
@@ -165,10 +230,60 @@ export class Telenow {
         identifier: r.identifier,
         userId: r.userId,
       }),
+    /**
+     * Place a **manual / softphone telephony call** (no AI in the loop). Telenow
+     * rings `to` from your org's `from` caller-ID and bridges the carrier leg to
+     * a human on a browser/app **softphone**. Hand the returned `{ sessionId,
+     * websocketUrl }` to a client SDK (`TelenowCall({ session })`) — that
+     * browser/app is the agent's microphone + speaker. Recordings, call records,
+     * and [webhooks](https://telenow.ai/docs/webhook-events) (`call.started`,
+     * `call.ended`, `recording.ready`) fire exactly as they do for AI calls.
+     *
+     * This is the building block for **click-to-call inside a CRM**: your
+     * backend mints the session, your frontend connects the softphone.
+     */
+    createManual: (r: CreateManualCallRequest): Promise<ManualCallSession> =>
+      this.req<ManualCallSession>('POST', '/api/sessions/init-web-call', {
+        mode: 'manual',
+        toNumber: r.to,
+        fromNumber: r.from,
+        userId: r.userId,
+      }),
     transfer: (sessionId: string, to: string): Promise<unknown> =>
       this.req('POST', `/api/sessions/${encodeURIComponent(sessionId)}/transfer`, { to }),
     end: (sessionId: string): Promise<unknown> =>
       this.req('DELETE', `/api/sessions/${encodeURIComponent(sessionId)}`),
+  };
+
+  /**
+   * **Text chat** with an agent over plain REST (`/api/v1/chat`) — same brain,
+   * knowledge bases (RAG) and HTTP tools as a voice call, no audio. Build your
+   * own chat bot/UI without running your own RAG pipeline. Chats settle as
+   * `chat` calls in history and fire the same webhooks as voice.
+   *
+   * Protocol: omit `sessionId` on the first turn (a session is created), then
+   * pass the returned id on every follow-up. A `TelenowError` with
+   * `status === 410` means the session expired — resend the SAME message
+   * WITHOUT `sessionId` to start fresh. `status === 409` ("turn in progress")
+   * means a reply is still generating — wait, then retry. See `chatLoop` below
+   * for a ready-made send loop that handles both.
+   */
+  readonly chat = {
+    /** Send one user turn; returns the agent's full reply. */
+    send: (r: ChatSendRequest): Promise<ChatReply> =>
+      this.req<ChatReply>('POST', '/api/v1/chat', {
+        agentId: r.agentId,
+        identifier: r.identifier,
+        input: r.input,
+        sessionId: r.sessionId,
+        variables: r.variables,
+      }),
+    /** Full user/assistant transcript of a chat session. */
+    messages: (sessionId: string): Promise<ChatTranscript> =>
+      this.req<ChatTranscript>('GET', `/api/v1/chat/${encodeURIComponent(sessionId)}/messages`),
+    /** End a chat session (idempotent) — settles billing + triggers analysis now. */
+    end: (sessionId: string): Promise<{ sessionId: string; ended: boolean }> =>
+      this.req('POST', `/api/v1/chat/${encodeURIComponent(sessionId)}/end`),
   };
 
   readonly agents = {
@@ -183,6 +298,93 @@ export class Telenow {
     /** Verify the `X-VoiceAI-Signature: sha256=<hex>` header against the raw body. */
     verify: (rawBody: string | Uint8Array, signatureHeader: string, secret: string): Promise<boolean> =>
       verifyWebhook(rawBody, signatureHeader, secret),
+  };
+}
+
+export interface ChatLoopOptions {
+  agentId: string;
+  /** Stable end-user id — kept identical for the whole conversation. */
+  identifier: string;
+  /** Context variables, re-sent each time a (fresh) session is created. */
+  variables?: Record<string, string>;
+  /** Max attempts per `send` before giving up on repeated 409/410. Default 5. */
+  maxRetries?: number;
+  /** Backoff before retrying after a 409 "turn in progress". Default 800 ms. */
+  conflictDelayMs?: number;
+}
+/** A stateful chat conversation — holds one `sessionId` and self-heals. */
+export interface ChatConversation {
+  /** Current server session id, or null before the first reply / after a 410 reset. */
+  readonly sessionId: string | null;
+  /** Send a user turn. Auto-restarts on 410, waits out 409. Returns the reply. */
+  send(input: string): Promise<ChatReply>;
+  /** Full transcript so far (empty before the first turn). */
+  messages(): Promise<ChatTranscript>;
+  /** End the conversation (no-op if it never started). */
+  end(): Promise<void>;
+}
+
+/**
+ * Stateful wrapper over `tn.chat` that implements the chat send-loop for you:
+ * it holds one `sessionId`, restarts transparently on `410 SESSION_EXPIRED`
+ * (re-sending `variables` on the fresh session), and backs off + retries on
+ * `409` "turn in progress". Keep one `ChatConversation` per end user.
+ *
+ * ```ts
+ * const convo = chatLoop(tn, { agentId, identifier: 'user-42', variables: { plan: 'Pro' } });
+ * const a = await convo.send('Hello!');          // turn 1
+ * const b = await convo.send('What are your hours?'); // turn 2 (or a transparent restart)
+ * await convo.end();
+ * ```
+ */
+export function chatLoop(tn: Telenow, opts: ChatLoopOptions): ChatConversation {
+  let sessionId: string | null = null;
+  const maxRetries = opts.maxRetries ?? 5;
+  const conflictDelayMs = opts.conflictDelayMs ?? 800;
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  return {
+    get sessionId() {
+      return sessionId;
+    },
+    async send(input: string): Promise<ChatReply> {
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const reply = await tn.chat.send({
+            agentId: opts.agentId,
+            identifier: opts.identifier,
+            input,
+            sessionId: sessionId ?? undefined,
+            // Variables are honored only on a session's first message.
+            variables: sessionId ? undefined : opts.variables,
+          });
+          sessionId = reply.sessionId;
+          return reply;
+        } catch (e) {
+          lastErr = e;
+          if (e instanceof TelenowError && e.status === 410) {
+            sessionId = null; // expired → recreate on the next attempt
+            continue;
+          }
+          if (e instanceof TelenowError && e.status === 409) {
+            await sleep(conflictDelayMs); // turn still generating → wait
+            continue;
+          }
+          throw e; // anything else is a real error
+        }
+      }
+      throw lastErr ?? new TelenowError('chat: gave up after repeated 409/410', 0);
+    },
+    async messages(): Promise<ChatTranscript> {
+      if (!sessionId) return { sessionId: '', messages: [] };
+      return tn.chat.messages(sessionId);
+    },
+    async end(): Promise<void> {
+      if (sessionId) {
+        await tn.chat.end(sessionId);
+        sessionId = null;
+      }
+    },
   };
 }
 

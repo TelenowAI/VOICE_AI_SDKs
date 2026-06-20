@@ -50,6 +50,47 @@ await tn.calls.transfer(sessionId, '+15557654321'); // warm transfer to a human
 await tn.calls.end(sessionId);                      // hang up
 ```
 
+## Manual / softphone calls (embed click-to-call in your CRM)
+
+Place a **human** call, not an AI one: Telenow rings `to` from your org's `from`
+caller-ID and bridges the carrier leg to a **softphone** in the browser/app. No
+AI, STT, LLM, or TTS — a person is on the line. This is the building block for
+**click-to-call inside a CRM**.
+
+```ts
+// 1) Your backend mints the softphone session (API key stays server-side).
+app.post('/crm/dial', async (req, res) => {
+  const session = await tn.calls.createManual({
+    to: req.body.customerPhone,    // E.164 number to ring
+    from: '+15550001111',          // your org's caller-ID (Numbers / BYOC / SIP)
+    userId: req.body.agentUserId,  // optional: who placed the call (attribution)
+  });
+  res.json(session); // { sessionId, websocketUrl, callId, callMode: 'manual', fromNumber, toNumber }
+});
+```
+
+```ts
+// 2) Your frontend connects the softphone — the rep's mic + speaker.
+import { TelenowCall } from '@telenow/client';
+const session = await fetch('/crm/dial', { method: 'POST', /* … */ }).then((r) => r.json());
+const call = new TelenowCall({ session });
+await call.start();      // mic permission → bridged to the customer
+// call.setMuted(true); call.stop();  — same controls as any web call
+```
+
+| `createManual` field | Required | What it does |
+|---|---|---|
+| `to` | ✓ | Destination number to ring, E.164. |
+| `from` | ✓ with an API key | Caller-ID — an E.164 number your org owns (Numbers / BYOC / SIP trunk). On a user JWT it defaults to the member's allocated number. |
+| `userId` | — | Attribution: the CRM user placing the call. |
+
+Manual calls are **recorded server-side** (both legs mixed) and fire the same
+[webhooks](https://telenow.ai/docs/webhook-events) as AI calls — so the
+`call.ended` / `recording.ready` events deliver the recording URL and call data
+straight to your CRM (see **Webhooks** below). Works on every carrier — Plivo,
+Twilio, Vobiz, Exotel, Vonage, and SIP trunks. `transfer`/`end` work on the
+returned `sessionId` too.
+
 ## Web calls (mint a session for your frontend)
 
 The recommended browser/app flow: mint here, hand the result to the client,
@@ -67,6 +108,40 @@ app.post('/voice/session', async (_req, res) => {
 });
 ```
 
+## Text chat (Chat API)
+
+Run a **text conversation** with an agent — same brain, knowledge bases (RAG)
+and HTTP tools as a voice call, no audio, no RAG pipeline of your own. Chats
+settle as `chat` calls in history and fire the same webhooks as voice.
+
+Omit `sessionId` on the first turn (one is created + returned), then pass it on
+follow-ups. `identifier` is your stable end-user id (binds the session). A `410`
+means the session expired (resend **without** `sessionId`); `409` means a reply
+is still generating (wait, retry).
+
+```ts
+const first = await tn.chat.send({ agentId: 'AGENT_UUID', identifier: 'user-42', input: 'Hello!' });
+// → { sessionId, reply, turn: 1, identifier }
+const next  = await tn.chat.send({ agentId: 'AGENT_UUID', identifier: 'user-42', input: 'More', sessionId: first.sessionId });
+const { messages } = await tn.chat.messages(first.sessionId);  // full transcript
+await tn.chat.end(first.sessionId);                            // settle now (idempotent)
+```
+
+Or let the **send-loop helper** hold the `sessionId`, restart on `410`, and wait
+out `409` for you — one per end user:
+
+```ts
+import { chatLoop } from '@telenow/server';
+const convo = chatLoop(tn, { agentId: 'AGENT_UUID', identifier: 'user-42', variables: { plan: 'Pro' } });
+const a = await convo.send('Hello!');               // turn 1
+const b = await convo.send('What are your hours?'); // turn 2 (or a transparent restart)
+await convo.end();
+```
+
+Replies are synchronous (return when the agent's full reply, incl. tool calls,
+is ready) — use a 60 s+ timeout, and send one turn at a time per `sessionId`.
+Full reference: [Chat API](https://telenow.ai/docs/api-chat).
+
 ## Webhooks
 
 Telenow signs every delivery with `X-VoiceAI-Signature: sha256=<hex>`
@@ -78,8 +153,9 @@ app.post('/webhooks/telenow', express.raw({ type: 'application/json' }), async (
   if (!ok) return res.status(401).end();
   const event = JSON.parse(req.body.toString());
   switch (event.event) {
-    case 'call.started':      break; // sessionId, agentId, timestamps
+    case 'call.started':      break; // sessionId, agentId, from/to, timestamps
     case 'call.ended':        break; // + duration, optional recording URL & transcript
+    case 'recording.ready':   break; // signed recording URL (may land just after the call)
     case 'transcript.ready':  break; // full transcript
     case 'tool.invoked':      break; // tool name, input, result
   }
@@ -87,8 +163,11 @@ app.post('/webhooks/telenow', express.raw({ type: 'application/json' }), async (
 });
 ```
 
-Configure endpoints + which events to receive in the dashboard (Webhooks), per
-agent or org-wide. Payload shapes:
+Configure endpoints + which events to receive in the dashboard (Webhooks) or
+the REST-hooks API, per agent or org-wide. Tick **include recording** on the
+endpoint to get the signed recording URL on `call.ended`. These fire for **AI
+agent calls, web calls, and [manual/softphone](#manual--softphone-calls-embed-click-to-call-in-your-crm)
+calls alike** — one receiver ingests them all. Payload shapes:
 [webhook events reference](https://telenow.ai/docs/webhook-events).
 
 ## Custom API — stream your own LLM into calls

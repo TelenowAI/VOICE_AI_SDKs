@@ -23,6 +23,12 @@ cd ios && pod install        # autolinks the native TelenowAudio module
    `init_web_call()` in Python) and hands `{ sessionId, websocketUrl }` to the
    app. Alternatives: the agent's published `publicSlug`, or an ephemeral
    client `token`.
+
+   > **Softphone / click-to-call:** the same `session` also drives a **human**
+   > call. A backend-minted [manual call](https://telenow.ai/docs/sdk-server#manual--softphone-calls)
+   > (`calls.createManual({ from, to })` — no AI) returns the same
+   > `{ sessionId, websocketUrl }`; pass it to `TelenowCall` and the device
+   > becomes the rep's softphone, bridged to the customer over the carrier.
 3. **Microphone permission**:
    - **iOS** — add to `Info.plist`:
      ```xml

@@ -5,6 +5,15 @@ n8n community nodes for [Telenow](https://telenow.ai) — voice AI agents over p
 - **Telenow Trigger**: start workflows on call events — call started/ended, post-call AI analysis (summary, sentiment, disposition), recording ready, transcript turns, tool invocations. Subscriptions are registered and removed automatically via Telenow's REST-hooks API when you activate/deactivate the workflow.
 - **Telenow**: place outbound AI agent calls (with context variables, opening line, answering-machine handling), fetch a call with its transcript, list calls, agents and phone numbers. The action node is also usable as a tool by n8n AI agents (`usableAsTool`).
 
+## What you can build
+
+- **60-second lead callback** — form/CRM trigger → *Place AI Agent Call* with the lead's name and product passed as context variables; the agent greets them personally.
+- **CRM hygiene on autopilot** — *Call Analyzed* trigger → write the AI summary, sentiment and disposition to the contact; let the disposition set the deal stage or alert a salesperson.
+- **Follow-ups that send themselves** — *Call Analyzed* action items → templated WhatsApp/email sends.
+- **Mid-call lookups** — a Telenow agent can call an n8n Webhook → *Respond to Webhook* flow **during a live call** and speak the result (order status, account balance, appointment slots).
+- **Compliance archive** — *Recording Ready* → upload recordings to Drive/S3.
+- **Daily ops digest** — schedule → *Get Many Calls* → aggregate → Slack/email report.
+
 ## Installation
 
 Self-hosted n8n: **Settings → Community Nodes → Install** and enter `n8n-nodes-telenow`.
@@ -46,7 +55,7 @@ To try it locally, link the package into your n8n custom nodes directory (`~/.n8
 
 ### Publishing (maintainers)
 
-This package must live in its own public GitHub repository (`telenow-ai/n8n-nodes-telenow`) — n8n's verification program requires npm releases to be published **via GitHub Actions with npm provenance** (no local publishes) since May 2026. The included `.github/workflows/release.yml` does exactly that on a GitHub release; it needs an `NPM_TOKEN` repo secret (automation token). After the first npm publish, submit the package through the [n8n Creator Portal](https://creators.n8n.io) for verification so it appears on n8n Cloud.
+This package must live in its own public GitHub repository (`TelenowAI/n8n-nodes-telenow`) — n8n's verification program requires npm releases to be published **via GitHub Actions with npm provenance** (no local publishes) since May 2026. The included `.github/workflows/release.yml` does exactly that on a GitHub release; it needs an `NPM_TOKEN` repo secret (automation token). After the first npm publish, submit the package through the [n8n Creator Portal](https://creators.n8n.io) for verification so it appears on n8n Cloud.
 
 Rules the package already follows: no runtime dependencies, English-only UI strings, `n8n-community-node-package` keyword, credentials/nodes wired under the `n8n` attribute in `package.json`.
 

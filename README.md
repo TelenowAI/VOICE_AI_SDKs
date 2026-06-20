@@ -11,9 +11,17 @@ Two buckets:
   client token, or a **backend-minted session** — recommended), reconnect, mic
   capture (μ-law 8 kHz default, matching the live server), jitter-buffered
   playback, barge-in flush, transcripts, latency ping echo.
-- **Backend / control** (REST/WS + token mint + webhook verify + **Custom API
+- **Backend / control** (REST/WS + token mint + webhook verify + AI **and
+  manual/softphone** call placement + **text chat** (Chat API) + **Custom API
   SSE helpers** for bring-your-own-LLM endpoints): Node, Python/Django, and an
   OpenAPI spec to generate the long tail (Kotlin, Go, Ruby, PHP, C#…).
+
+**Embed phone calls in your CRM.** Place AI agent calls, or **manual/softphone
+telephony** calls — your backend sends a `to` (customer) and `from` (your
+caller-ID) number, Telenow bridges the carrier leg to a human on a browser/app
+softphone (the [client SDK](client-web/)), and webhooks deliver the recording
+and full call data when it ends. See [`server-node`](server-node/) /
+[`server-python`](server-python/) → "Manual / softphone calls".
 
 | Package | Dir | Registry | Bucket | Status |
 |---|---|---|---|---|
