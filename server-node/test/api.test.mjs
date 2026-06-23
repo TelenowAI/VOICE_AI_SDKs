@@ -60,6 +60,17 @@ test('calls.createWeb posts init-web-call and returns the session', async () => 
   assert.deepEqual(sess, { sessionId: 's2', websocketUrl: 'wss://api.example/ws/web-agent' });
 });
 
+test('calls.createWeb forwards a per-call firstResponse opener override', async () => {
+  const { calls, fetchImpl } = capture({ sessionId: 's3', websocketUrl: 'wss://api.example/ws/web-agent' });
+  const tn = new Telenow({ apiKey: 'k', baseUrl: 'https://api.example', fetch: fetchImpl });
+  await tn.calls.createWeb({ agentId: 'a1', firstResponse: 'Hi Asha!', variables: { name: 'Asha' } });
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    agentId: 'a1',
+    firstResponse: 'Hi Asha!',
+    variables: { name: 'Asha' },
+  });
+});
+
 test('calls.createManual posts init-web-call in manual mode and omits absent fields', async () => {
   const { calls, fetchImpl } = capture({
     sessionId: 'm1',

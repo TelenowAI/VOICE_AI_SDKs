@@ -131,6 +131,13 @@ paths:
                   type: string
                   description: Trusted caller identifier, injected into tool calls when the agent opts in (agent mode).
                 userId: { type: string, format: uuid }
+                firstResponse:
+                  type: string
+                  description: >
+                    Agent mode — override the agent's opening line for THIS
+                    session. When set (non-blank) the agent speaks this text
+                    first instead of its saved opener (e.g. a personalized
+                    `"Hi {name}!"`). Variables resolve against `variables`.
       responses:
         '200':
           description: Session ready

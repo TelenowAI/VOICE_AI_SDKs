@@ -77,6 +77,16 @@ class TestClientRequests(unittest.TestCase):
         )
         self.assertEqual(sess, payload)
 
+    def test_init_web_call_forwards_first_response(self):
+        payload = {"sessionId": "s3", "websocketUrl": "wss://api.example/ws/web-agent"}
+        with mock.patch("urllib.request.urlopen", return_value=_response(payload)) as u:
+            self.tn.init_web_call("a1", first_response="Hi Asha!", variables={"name": "Asha"})
+        req = u.call_args[0][0]
+        self.assertEqual(
+            json.loads(req.data.decode("utf-8")),
+            {"agentId": "a1", "variables": {"name": "Asha"}, "firstResponse": "Hi Asha!"},
+        )
+
     def test_create_manual_call(self):
         payload = {
             "sessionId": "m1",

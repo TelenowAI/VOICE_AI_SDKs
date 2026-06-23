@@ -141,12 +141,18 @@ class Telenow:
         variables: Optional[Dict[str, str]] = None,
         identifier: Optional[str] = None,
         user_id: Optional[str] = None,
+        first_response: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Init a browser/app voice session server-side (init-web-call).
 
         Hand the returned ``{"sessionId", "websocketUrl"}`` to your frontend —
         the client SDKs accept it as a pre-initialized ``session``, so no
         credential ever ships to the client.
+
+        ``first_response`` overrides the agent's opening line for THIS session:
+        when set (non-blank) the agent speaks it first instead of its saved
+        opener, ideal for a personalized greeting (``"Hi {name}!"``). Variables
+        resolve against ``variables``.
         """
         body: Dict[str, Any] = {"agentId": agent_id}
         if variables is not None:
@@ -155,6 +161,8 @@ class Telenow:
             body["identifier"] = identifier
         if user_id is not None:
             body["userId"] = user_id
+        if first_response is not None:
+            body["firstResponse"] = first_response
         return self._request("POST", "/api/sessions/init-web-call", body)
 
     def transfer_call(self, session_id: str, to: str) -> Any:

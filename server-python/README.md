@@ -104,6 +104,7 @@ async def voice_session():
         "AGENT_UUID",
         variables={"customer_name": "Asha"},   # baked in server-side — client can't tamper
         identifier="customer-9",
+        first_response="Hi Asha! How can I help today?",  # optional: override the opener for THIS session
     )
     # → {"sessionId": ..., "websocketUrl": ...}  → TelenowCall({ session })
 ```

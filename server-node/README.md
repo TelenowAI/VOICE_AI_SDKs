@@ -103,6 +103,7 @@ app.post('/voice/session', async (_req, res) => {
     agentId: process.env.AGENT_ID!,
     variables: { customer_name: 'Asha' },   // baked in server-side — client can't tamper
     identifier: 'customer-9',
+    firstResponse: 'Hi Asha! How can I help today?', // optional: override the opener for THIS session
   });
   res.json(session);   // { sessionId, websocketUrl } → TelenowCall({ session })
 });

@@ -102,6 +102,13 @@ export interface InitWebCallRequest {
   /** Trusted caller identifier, injected into tool calls when the agent opts in. */
   identifier?: string;
   userId?: string;
+  /**
+   * Override the agent's opening line for THIS session. When set (non-blank),
+   * the agent speaks this text first instead of its saved opener — ideal for a
+   * personalized greeting (`"Hi {name}!"`). Variables resolve against
+   * `variables`.
+   */
+  firstResponse?: string;
 }
 
 export interface ChatSendRequest {
@@ -229,6 +236,7 @@ export class Telenow {
         variables: r.variables,
         identifier: r.identifier,
         userId: r.userId,
+        firstResponse: r.firstResponse,
       }),
     /**
      * Place a **manual / softphone telephony call** (no AI in the loop). Telenow
