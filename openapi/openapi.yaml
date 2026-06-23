@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Telenow Voice API
-  version: 0.1.0
+  version: 0.1.1
   description: >
     Control-plane API for the Telenow Voice SDK. Generate backend clients in any
     language from this spec (see README). Audio is carried over a separate
