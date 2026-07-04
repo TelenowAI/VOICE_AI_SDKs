@@ -149,12 +149,21 @@ export interface ChatTranscript {
 }
 /**
  * Hand this to the browser/app: the client SDKs accept it as `session` and
- * connect straight to `websocketUrl` — no credential ever ships to the client.
+ * connect transparently — no credential ever ships to the client. `transport`
+ * is chosen by the AGENT's config; the client SDK connects over WebSocket or
+ * WebRTC accordingly, so you just pass this object straight through unchanged.
  */
 export interface WebCallSession {
   sessionId: string;
-  websocketUrl: string;
+  /** WebSocket transport (default). Absent on a WebRTC session. */
+  websocketUrl?: string;
   status?: string;
+  /** 'websocket' (default) | 'webrtc'. Absent → websocket. */
+  transport?: 'websocket' | 'webrtc';
+  /** LiveKit fields — present only when `transport === 'webrtc'`. */
+  livekitUrl?: string;
+  token?: string;
+  room?: string;
 }
 
 export class TelenowError extends Error {

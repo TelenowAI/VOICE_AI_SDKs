@@ -262,10 +262,10 @@ paths:
             schema: { $ref: '#/components/schemas/CreateHookRequest' }
       responses:
         '201':
-          description: Subscribed
+          description: Subscribed. The signing secret is returned ONLY here (never in the list endpoint).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Hook' }
+              schema: { $ref: '#/components/schemas/HookCreated' }
         '400': { $ref: '#/components/responses/Error' }
 
   /api/v1/hooks/{id}:
@@ -468,6 +468,17 @@ components:
         include_transcript: { type: boolean }
         source: { type: string, example: zapier }
         created_at: { type: string, format: date-time }
+    HookCreated:
+      description: >-
+        The create response. Identical to Hook plus the HMAC signing secret,
+        which is returned ONLY at creation (never in the list endpoint). Persist
+        it to verify the X-VoiceAI-Signature (sha256=<hex>) on delivered events.
+      allOf:
+        - $ref: '#/components/schemas/Hook'
+        - type: object
+          properties:
+            signing_secret: { type: string, description: 'HMAC-SHA256 key for X-VoiceAI-Signature verification' }
+            secret: { type: string, description: 'Alias of signing_secret' }
     CreateHookRequest:
       type: object
       required: [target_url]

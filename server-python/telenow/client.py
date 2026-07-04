@@ -145,9 +145,13 @@ class Telenow:
     ) -> Dict[str, Any]:
         """Init a browser/app voice session server-side (init-web-call).
 
-        Hand the returned ``{"sessionId", "websocketUrl"}`` to your frontend —
-        the client SDKs accept it as a pre-initialized ``session``, so no
-        credential ever ships to the client.
+        Hand the returned dict to your frontend as a pre-initialized
+        ``session`` — the client SDKs accept it as-is, so no credential ever
+        ships to the client. The transport is chosen by the AGENT's config: a
+        WebSocket agent returns ``{"sessionId", "websocketUrl"}``; a WebRTC agent
+        returns ``{"sessionId", "transport": "webrtc", "livekitUrl", "token",
+        "room"}``. Pass the whole dict through unchanged — the client SDK
+        connects over whichever transport it names.
 
         ``first_response`` overrides the agent's opening line for THIS session:
         when set (non-blank) the agent speaks it first instead of its saved

@@ -18,10 +18,33 @@ export interface TranscriptLine {
   isFinal: boolean;
 }
 
-/** A session minted by your backend (server SDK `calls.createWeb`). */
+/**
+ * A session from init-web-call (via a client token, a public slug, or one your
+ * backend minted). `transport` is chosen by the AGENT's configuration, so the
+ * SDK connects over WebSocket or WebRTC (LiveKit) transparently — your code is
+ * identical either way. WebRTC additionally needs the optional peer dependency
+ * `livekit-client` (`npm install livekit-client`); WebSocket needs nothing.
+ */
 export interface TelenowSession {
   sessionId: string;
-  websocketUrl: string;
+  /** WebSocket transport (default). Absent on a WebRTC session. */
+  websocketUrl?: string;
+  /** 'websocket' (default) | 'webrtc'. Absent → websocket. */
+  transport?: 'websocket' | 'webrtc';
+  /** LiveKit fields — present only when `transport === 'webrtc'`. */
+  livekitUrl?: string;
+  token?: string;
+  room?: string;
+}
+
+/**
+ * Minimal structural view of the bits of a LiveKit `Room` this class stores —
+ * deliberately NOT the imported type, so `livekit-client` never leaks into the
+ * published `.d.ts` and WS-only consumers don't need it to type-check.
+ */
+interface LkRoomLike {
+  disconnect(): Promise<void>;
+  localParticipant: { setMicrophoneEnabled(enabled: boolean): Promise<unknown> };
 }
 
 export interface CallAudioOptions {
@@ -156,6 +179,9 @@ class BrowserMedia implements MediaAdapter {
 
 export class TelenowCall {
   private socket: ReconnectingSocket | null = null;
+  /** LiveKit room + attached agent-audio elements — set only on a WebRTC call. */
+  private room: LkRoomLike | null = null;
+  private lkAudioEls: HTMLMediaElement[] = [];
   private readonly media: MediaAdapter;
   private _state: CallState = 'idle';
   private _muted = false;
@@ -185,6 +211,15 @@ export class TelenowCall {
     try {
       const sess = this.opts.session ?? (await this.initSession());
       this._sessionId = sess.sessionId;
+      // Transport is decided by the agent's config. WebRTC connects via a LiveKit
+      // room; the WebSocket path (below) is unchanged. Same public API either way.
+      if (sess.transport === 'webrtc') {
+        await this.connectWebRTC(sess);
+        return;
+      }
+      if (!sess.websocketUrl) {
+        throw new Error('TelenowCall: session is missing websocketUrl');
+      }
       const socket = new ReconnectingSocket({
         url: sess.websocketUrl,
         hello: () => JSON.stringify({ event: 'start', sessionId: sess.sessionId }),
@@ -225,7 +260,11 @@ export class TelenowCall {
 
   setMuted(muted: boolean): void {
     this._muted = muted;
-    this.media.setMuted(muted);
+    if (this.room) {
+      void this.room.localParticipant.setMicrophoneEnabled(!muted);
+    } else {
+      this.media.setMuted(muted);
+    }
   }
 
   /**
@@ -233,6 +272,8 @@ export class TelenowCall {
    * a text-only reply (chat mode) instead of a spoken one.
    */
   sendText(text: string, opts?: { chat?: boolean }): boolean {
+    // WebRTC is voice-only (no server-bound text channel) — no-op there.
+    if (this.room) return false;
     return (
       this.socket?.send(
         JSON.stringify({ event: 'text', text, ...(opts?.chat ? { chat: true } : {}) }),
@@ -261,6 +302,72 @@ export class TelenowCall {
     this.opts.onState?.(s);
   }
 
+  /**
+   * WebRTC (LiveKit) transport. Same lifecycle the caller sees on the WS path —
+   * state goes 'live', `onTranscript` fires — but LiveKit natively handles mic
+   * capture + agent playback, so none of the WS / jitter-buffer machinery runs.
+   * `livekit-client` is imported lazily here so WS-only apps never pull it in.
+   */
+  private async connectWebRTC(sess: TelenowSession): Promise<void> {
+    if (!sess.livekitUrl || !sess.token) {
+      throw new Error('TelenowCall: WebRTC session missing livekitUrl/token');
+    }
+    // `livekit-client` is a dependency of this package (auto-installed) but loaded
+    // lazily here, so WebSocket-only apps never fetch it at runtime.
+    let lk: typeof import('livekit-client');
+    try {
+      lk = await import('livekit-client');
+    } catch (e) {
+      throw new Error(
+        `Failed to load the WebRTC engine (livekit-client): ${(e as Error).message}. ` +
+          'Try reinstalling dependencies (npm install).',
+      );
+    }
+    const room = new lk.Room();
+    this.room = room;
+    room.on(lk.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind === lk.Track.Kind.Audio) {
+        const el = track.attach();
+        el.autoplay = true;
+        el.style.display = 'none';
+        document.body.appendChild(el);
+        this.lkAudioEls.push(el);
+      }
+    });
+    room.on(lk.RoomEvent.TrackUnsubscribed, (track) => {
+      track.detach().forEach((el) => el.remove());
+    });
+    room.on(lk.RoomEvent.DataReceived, (payload: Uint8Array) => {
+      // Transcript (and other UI events) arrive over the data channel — same JSON
+      // the WS path delivers, so it feeds the identical `onTranscript` callback.
+      let m: Record<string, unknown>;
+      try {
+        m = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (m.event === 'transcript') {
+        this.opts.onTranscript?.({
+          role: String(m.role ?? ''),
+          text: String(m.text ?? ''),
+          isFinal: Boolean(m.isFinal),
+        });
+      }
+    });
+    room.on(lk.RoomEvent.Disconnected, () => this.teardown('ended'));
+    await room.connect(sess.livekitUrl, sess.token);
+    await room.localParticipant.setMicrophoneEnabled(!this._muted);
+    // start() is invoked from a user gesture, so browser autoplay is permitted.
+    if (!room.canPlaybackAudio) {
+      try {
+        await room.startAudio();
+      } catch {
+        /* a later gesture / the mute toggle can retry */
+      }
+    }
+    this.setState('live');
+  }
+
   private teardown(finalState: CallState): void {
     if (this.ended) return;
     this.ended = true;
@@ -271,6 +378,22 @@ export class TelenowCall {
     } catch {
       /* noop */
     }
+    // WebRTC: disconnect the room + detach the agent-audio element(s).
+    const room = this.room;
+    this.room = null;
+    try {
+      void room?.disconnect();
+    } catch {
+      /* noop */
+    }
+    for (const el of this.lkAudioEls) {
+      try {
+        el.remove();
+      } catch {
+        /* noop */
+      }
+    }
+    this.lkAudioEls = [];
     this.media.stop();
     // Never let a normal teardown mask an error state.
     if (this._state !== 'error') this.setState(finalState);

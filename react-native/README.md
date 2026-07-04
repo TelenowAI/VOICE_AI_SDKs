@@ -111,6 +111,33 @@ Test on a real device, or switch to `halfDuplex`.
 - **Latency pings** — answered automatically so dashboard analytics show real
   round-trip times.
 
+## WebRTC transport (native setup required)
+
+The transport is chosen by the **agent's config**, not your code. A WebRTC agent
+connects over LiveKit; every other agent uses the WebSocket path above. The SDK
+detects which from the `init-web-call` response — **your `TelenowCall` code is
+unchanged** (`start()` / `stop()` / `setMuted()` / `onState` / `onTranscript`
+behave identically).
+
+WebRTC on React Native rides `@livekit/react-native`, which is a **native
+module** — shipped as a dependency of this package, but it needs a native
+rebuild that no packaging can skip:
+
+1. `npm install @telenow/react-native` pulls in `@livekit/react-native` +
+   `@livekit/react-native-webrtc` automatically.
+2. **iOS:** `cd ios && pod install`. **Android:** a Gradle sync/rebuild.
+   **Expo:** add the LiveKit config plugin and run a dev-client/prebuild —
+   WebRTC does **not** work in Expo Go.
+3. Rebuild and run on a **real device** (WebRTC media won't run in JS-only
+   tooling or, reliably, simulators).
+
+The SDK registers LiveKit's WebRTC globals and starts the native audio session
+for you on the first WebRTC call. `onTranscript` fires over the data channel;
+remote agent audio plays through the native audio session automatically.
+
+> WebSocket agents need none of this — they use the built-in native audio module
+> and work with a plain install.
+
 ## Architecture (what's native, what's JS)
 
 ```

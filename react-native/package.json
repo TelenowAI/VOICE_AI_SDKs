@@ -27,6 +27,10 @@
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build"
   },
+  "dependencies": {
+    "@livekit/react-native": "^2.11.1",
+    "@livekit/react-native-webrtc": "^144.1.1"
+  },
   "peerDependencies": {
     "@telenow/client": "^0.1.0",
     "react": ">=18",

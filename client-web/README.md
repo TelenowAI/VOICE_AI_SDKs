@@ -109,6 +109,25 @@ Methods: `start(): Promise<void>` (throws on failure, also surfaces via
 `onError`), `stop()`, `setMuted(boolean)`, `sendText(text, { chat? }): boolean`
 (false when the socket isn't open). Getters: `state`, `muted`, `sessionId`.
 
+## Transport: WebSocket & WebRTC (nothing to change)
+
+The transport is chosen by the **agent's configuration**, not your code. An agent
+set to **WebRTC** connects over LiveKit; every other agent uses **WebSocket**. The
+SDK detects which from the `init-web-call` response and connects accordingly, so
+**the same code runs both** — `new TelenowCall({ token }).start()` is unchanged,
+and `onState` / `onTranscript` / `setMuted()` / `stop()` behave identically.
+
+**Nothing to install.** WebRTC support (`livekit-client`) ships as a dependency of
+this package, so a plain `npm install @telenow/client` covers both transports. It's
+loaded **lazily** — the LiveKit code is code-split into a chunk that's only fetched
+at runtime when a WebRTC call actually starts, so WebSocket-only apps never pay the
+bundle cost at load.
+
+Notes for WebRTC calls: LiveKit handles mic capture and agent playback natively,
+so the `mediaAdapter` / half-duplex options and per-frame `onLevel` don't apply,
+and `sendText()` (voice-only transport) returns `false`. Everything else — live
+transcripts, barge-in, mute, hang-up — works the same.
+
 ## Turn-taking: duplex vs half-duplex
 
 - **`'duplex'` (default)** — full duplex with **barge-in**: the caller can
