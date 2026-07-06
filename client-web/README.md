@@ -93,7 +93,7 @@ the AI).
 | `audio.targetSampleRate` | `number` | 8000 | Uplink rate (16000 when `pcm16`). |
 | `audio.echoCancellation` | `boolean` | `true` | Browser AEC. Keep on for two-way audio. |
 | `audio.noiseSuppression` | `boolean` | `true` | Browser noise suppression. |
-| `audio.autoGainControl` | `boolean` | `false` | Off by default — AGC clips loud speech and hurts transcription. |
+| `audio.autoGainControl` | `boolean` | `true` | On by default (v0.1.5+) — without AGC, typical laptop mics sit below the platform's barge-in gate, so callers can't interrupt the agent mid-speech. Set `false` only for pre-levelled/broadcast inputs. |
 | `audio.deviceId` | `string` | system default | Pick a specific microphone (`enumerateDevices()`). |
 | `turnTaking` | `'duplex' \| 'halfDuplex'` | `'duplex'` | See **Turn-taking** below. |
 | `halfDuplexTailMs` | `number` | 250 | Extra mic-gate time after agent audio drains (halfDuplex only). |

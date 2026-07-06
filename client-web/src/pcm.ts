@@ -8,10 +8,105 @@
 //
 // All functions are pure and unit-tested (see __tests__/pcm.test.ts).
 
+/** One RBJ-cookbook low-pass biquad section (Direct Form I). */
+class LowpassBiquad {
+  private readonly b0: number;
+  private readonly b1: number;
+  private readonly b2: number;
+  private readonly a1: number;
+  private readonly a2: number;
+  private x1 = 0;
+  private x2 = 0;
+  private y1 = 0;
+  private y2 = 0;
+  constructor(fs: number, fc: number, q: number) {
+    const w0 = (2 * Math.PI * fc) / fs;
+    const alpha = Math.sin(w0) / (2 * q);
+    const cw = Math.cos(w0);
+    const a0 = 1 + alpha;
+    this.b0 = (1 - cw) / 2 / a0;
+    this.b1 = (1 - cw) / a0;
+    this.b2 = this.b0;
+    this.a1 = (-2 * cw) / a0;
+    this.a2 = (1 - alpha) / a0;
+  }
+  process(x: number): number {
+    const y =
+      this.b0 * x + this.b1 * this.x1 + this.b2 * this.x2 - this.a1 * this.y1 - this.a2 * this.y2;
+    this.x2 = this.x1;
+    this.x1 = x;
+    this.y2 = this.y1;
+    this.y1 = y;
+    return y;
+  }
+}
+
+/**
+ * Stateful anti-aliased streaming resampler — REQUIRED for live per-chunk
+ * mic capture. Per-chunk `resampleFloat32` on a chunked stream has two bugs
+ * that garble audio into STT-hallucination territory (the "agent is deaf"
+ * bug found in production): no band-limiting (everything above the target
+ * Nyquist folds into the speech band on 48k→16k/8k), and a stateless
+ * fractional position that seams every chunk boundary (~2.7ms at the 128-
+ * sample worklet quantum). 4th-order Butterworth low-pass (two biquads,
+ * Q = 0.5412 / 1.30656) at 0.45×dstRate applied BEFORE decimation, then
+ * linear interpolation whose position and boundary sample carry across
+ * chunks. One instance per stream; feed chunks in order.
+ */
+export class AntiAliasResampler {
+  private readonly s1: LowpassBiquad | null;
+  private readonly s2: LowpassBiquad | null;
+  private readonly ratio: number;
+  private readonly passthrough: boolean;
+  /** Final input sample of the previous chunk (virtual index 0). */
+  private last = 0;
+  /** Fractional read position past `last`, carried across chunks. */
+  private pos = 0;
+
+  constructor(srcRate: number, dstRate: number) {
+    this.passthrough = srcRate === dstRate;
+    this.ratio = srcRate / dstRate;
+    if (srcRate > dstRate) {
+      const fc = dstRate * 0.45;
+      this.s1 = new LowpassBiquad(srcRate, fc, 0.5412);
+      this.s2 = new LowpassBiquad(srcRate, fc, 1.30656);
+    } else {
+      this.s1 = null;
+      this.s2 = null;
+    }
+  }
+
+  process(chunk: Float32Array): Float32Array {
+    if (this.passthrough || chunk.length === 0) return chunk;
+    let src = chunk;
+    if (this.s1 && this.s2) {
+      src = new Float32Array(chunk.length);
+      for (let i = 0; i < chunk.length; i++) {
+        src[i] = this.s2.process(this.s1.process(chunk[i]));
+      }
+    }
+    const n = src.length;
+    const out: number[] = [];
+    let pos = this.pos;
+    while (pos < n) {
+      const i0 = Math.floor(pos);
+      const frac = pos - i0;
+      const s0 = i0 === 0 ? this.last : src[i0 - 1];
+      const s1v = src[i0];
+      out.push(s0 * (1 - frac) + s1v * frac);
+      pos += this.ratio;
+    }
+    this.pos = pos - n;
+    this.last = src[n - 1];
+    return Float32Array.from(out);
+  }
+}
+
 /**
  * Resample a mono Float32 buffer from `inRate` to `outRate` using linear
- * interpolation. Adequate for speech; the Rust core swaps in a polyphase/sinc
- * resampler for production fidelity.
+ * interpolation. ONE-SHOT buffers only — for live chunked streams use
+ * `AntiAliasResampler` (this helper is stateless and unfiltered, which
+ * aliases + seams a chunked mic stream).
  */
 export function resampleFloat32(
   input: Float32Array,

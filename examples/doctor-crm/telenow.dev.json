@@ -1,0 +1,19 @@
+{
+  "seed": {
+    "patient": [
+      { "name": "Asha Rao", "phone": "+919800000001", "status": "active", "condition": "Hypertension", "notes": "Review BP monthly" },
+      { "name": "Vikram Singh", "phone": "+919800000002", "status": "active", "condition": "Diabetes T2", "notes": "HbA1c due" },
+      { "name": "Meera Iyer", "phone": "+919800000003", "status": "inactive", "condition": "Migraine", "notes": "" }
+    ],
+    "appointment": [
+      { "patient_name": "Asha Rao", "phone": "+919800000001", "problem": "BP follow-up", "start": "2026-07-01T10:00", "status": "scheduled" },
+      { "patient_name": "Vikram Singh", "phone": "+919800000002", "problem": "Lab review", "start": "2026-07-01T11:30", "status": "scheduled" },
+      { "patient_name": "Meera Iyer", "phone": "+919800000003", "problem": "Headache", "start": "2026-06-28T09:00", "status": "visited" }
+    ],
+    "visit": [
+      { "patient_name": "Meera Iyer", "phone": "+919800000003", "diagnosis": "Tension headache", "prescription": "Paracetamol 500mg", "follow_up": "2026-07-15", "notes": "Hydration advised" }
+    ]
+  },
+  "agents": [{ "id": "agent-front-desk", "name": "Front Desk" }],
+  "user": { "id": "dev-1", "role": "owner", "permissions": ["view", "manage_agents"], "name": "Dr. Dev", "email": "dev@clinic.test" }
+}

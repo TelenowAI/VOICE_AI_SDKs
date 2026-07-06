@@ -11,7 +11,7 @@
 // of the framing/encoding is covered by pcm.test.ts.
 
 import {
-  resampleFloat32,
+  AntiAliasResampler,
   float32ToInt16,
   int16ToLEBytes,
   pcm16ToMulaw,
@@ -37,7 +37,11 @@ export interface CaptureOptions {
   echoCancellation?: boolean;
   /** WebRTC APM noise suppression. Default true. */
   noiseSuppression?: boolean;
-  /** WebRTC APM auto gain. Default false (AGC clips loud speech, hurts STT). */
+  /** WebRTC APM auto gain. Default TRUE — measured in production: without
+   *  AGC a typical laptop mic delivers speech at ~-35dBFS, below the
+   *  platform's barge-in detection gate, so callers cannot interrupt the
+   *  agent while it speaks (and AEC crushes the un-boosted mic during
+   *  playback). Set false only for pre-levelled/broadcast inputs. */
   autoGainControl?: boolean;
   /** Optional specific input device. */
   deviceId?: string;
@@ -68,6 +72,7 @@ export class CaptureEngine {
   private node: AudioWorkletNode | ScriptProcessorNode | null = null;
   private sink: GainNode | null = null;
   private acc: Float32Array = new Float32Array(0);
+  private down: AntiAliasResampler | null = null;
   private muted = false;
 
   constructor(opts: CaptureOptions) {
@@ -85,7 +90,7 @@ export class CaptureEngine {
     const audio: MediaTrackConstraints = {
       echoCancellation: this.opts.echoCancellation ?? true,
       noiseSuppression: this.opts.noiseSuppression ?? true,
-      autoGainControl: this.opts.autoGainControl ?? false,
+      autoGainControl: this.opts.autoGainControl ?? true,
     };
     if (this.opts.deviceId) audio.deviceId = this.opts.deviceId;
     this.stream = await md.getUserMedia({ audio });
@@ -93,7 +98,16 @@ export class CaptureEngine {
     const Ctx =
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    const ctx = new Ctx();
+    // Ask the context for the TARGET rate: when the browser honours the
+    // hint its own high-quality resampler feeds us the wire rate directly
+    // and our resampler passes through. When it doesn't (older Safari,
+    // some hardware), the stateful anti-aliased resampler below covers it.
+    let ctx: AudioContext;
+    try {
+      ctx = new Ctx({ sampleRate: this.targetRate });
+    } catch {
+      ctx = new Ctx();
+    }
     this.ctx = ctx;
     const src = ctx.createMediaStreamSource(this.stream);
     const onChunk = (chunk: Float32Array): void => this.ingest(chunk, ctx.sampleRate);
@@ -148,11 +162,15 @@ export class CaptureEngine {
     this.stream = null;
     this.ctx = null;
     this.acc = new Float32Array(0);
+    this.down = null;
   }
 
   private ingest(chunk: Float32Array, inRate: number): void {
     if (this.muted) return;
-    const down = resampleFloat32(chunk, inRate, this.targetRate);
+    // Stateful + band-limited across chunks — per-chunk resampleFloat32
+    // aliased and seamed the stream (see AntiAliasResampler in pcm.ts).
+    this.down ??= new AntiAliasResampler(inRate, this.targetRate);
+    const down = this.down.process(chunk);
     const merged = new Float32Array(this.acc.length + down.length);
     merged.set(this.acc, 0);
     merged.set(down, this.acc.length);

@@ -1,0 +1,764 @@
+{
+  "id": "clinic-crm",
+  "version": "2.2.3",
+  "name": "Doctor CRM",
+  "runtime": "declarative",
+  "category": "crm",
+  "icon": "stethoscope",
+  "blurb": "A full clinic CRM: patients, appointments, and visit logs \u2014 managed from the dashboard and by the voice agent during calls.",
+  "screenshots": [
+    {
+      "file": "screenshots/01-patients.png",
+      "caption": "Patients — register, search, and manage the records the voice agent shares on every call."
+    },
+    {
+      "file": "screenshots/02-appointments.png",
+      "caption": "Appointments — book with a reason, filter by date, and mark Visited / No-show / Cancel."
+    },
+    {
+      "file": "screenshots/03-visits.png",
+      "caption": "Visits — log diagnosis, prescription, and follow-up, and browse the visit history."
+    },
+    {
+      "file": "screenshots/04-reports.png",
+      "caption": "Reports — patient counts, visit-rate, appointments-per-day, top diagnoses, and follow-ups due."
+    }
+  ],
+  "scopes": [
+    "objects:patient",
+    "objects:appointment",
+    "objects:visit",
+    "agents:read",
+    "calls:initiate",
+    "calls:read",
+    "whatsapp:send",
+    "softphone:dial",
+    "user:profile",
+    "campaigns:write",
+    "campaigns:read"
+  ],
+  "objects": [
+    {
+      "type": "patient",
+      "label": "Patient",
+      "fields": [
+        {
+          "key": "name",
+          "type": "string",
+          "index": true
+        },
+        {
+          "key": "phone",
+          "type": "phone",
+          "index": true
+        },
+        {
+          "key": "status",
+          "type": "enum",
+          "values": [
+            "active",
+            "inactive"
+          ],
+          "default": "active",
+          "index": true
+        },
+        {
+          "key": "condition",
+          "type": "string"
+        },
+        {
+          "key": "notes",
+          "type": "string"
+        },
+        {
+          "key": "display",
+          "type": "string",
+          "computed": {
+            "template": "{{name}} ({{phone}})"
+          }
+        }
+      ],
+      "views": [
+        {
+          "name": "active",
+          "label": "Active patients",
+          "filter": {
+            "status": "active"
+          },
+          "orderBy": {
+            "field": "name"
+          }
+        }
+      ],
+      "semantic": true
+    },
+    {
+      "type": "appointment",
+      "label": "Appointment",
+      "fields": [
+        {
+          "key": "patient_name",
+          "type": "string",
+          "index": true
+        },
+        {
+          "key": "phone",
+          "type": "phone",
+          "index": true
+        },
+        {
+          "key": "problem",
+          "type": "string"
+        },
+        {
+          "key": "start",
+          "type": "datetime",
+          "index": true
+        },
+        {
+          "key": "status",
+          "type": "enum",
+          "values": [
+            "scheduled",
+            "visited",
+            "not_visited",
+            "cancelled"
+          ],
+          "default": "scheduled",
+          "index": true
+        },
+        {
+          "key": "patient_id",
+          "type": "string",
+          "index": true,
+          "relation": {
+            "object": "patient"
+          }
+        }
+      ],
+      "views": [
+        {
+          "name": "scheduled",
+          "label": "Scheduled",
+          "filter": {
+            "status": "scheduled"
+          },
+          "orderBy": {
+            "field": "start",
+            "numeric": false
+          }
+        }
+      ]
+    },
+    {
+      "type": "visit",
+      "label": "Visit",
+      "fields": [
+        {
+          "key": "patient_name",
+          "type": "string",
+          "index": true
+        },
+        {
+          "key": "phone",
+          "type": "phone",
+          "index": true
+        },
+        {
+          "key": "diagnosis",
+          "type": "string"
+        },
+        {
+          "key": "prescription",
+          "type": "string"
+        },
+        {
+          "key": "follow_up",
+          "type": "datetime",
+          "index": true
+        },
+        {
+          "key": "notes",
+          "type": "string"
+        }
+      ],
+      "semantic": true
+    },
+    {
+      "type": "lead",
+      "label": "Lead",
+      "fields": [
+        {
+          "key": "name",
+          "type": "string",
+          "index": true
+        },
+        {
+          "key": "phone",
+          "type": "phone",
+          "index": true
+        },
+        {
+          "key": "source",
+          "type": "string"
+        },
+        {
+          "key": "status",
+          "type": "enum",
+          "values": [
+            "new",
+            "called",
+            "converted"
+          ],
+          "default": "new",
+          "index": true
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "find_patient",
+      "description": "Look up an existing patient to recognise the caller. Pass EITHER phone (preferred) OR name \u2014 supply only ONE; passing both requires an exact match on both.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "patient phone number (preferred lookup key)"
+          },
+          "name": {
+            "type": "string",
+            "description": "patient full name \u2014 use only if phone is unknown"
+          }
+        }
+      },
+      "handler": {
+        "kind": "object.query",
+        "object": "patient"
+      }
+    },
+    {
+      "name": "register_patient",
+      "description": "Create a new patient record.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "condition": {
+            "type": "string",
+            "description": "known/chronic condition, optional"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "phone"
+        ]
+      },
+      "handler": {
+        "kind": "object.create",
+        "object": "patient"
+      }
+    },
+    {
+      "name": "book_appointment",
+      "description": "Book a clinic appointment for the caller, with the reason / problem for the visit.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient_name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "problem": {
+            "type": "string",
+            "description": "reason / symptoms for the visit",
+            "x-ui": {
+              "widget": "textarea",
+              "placeholder": "e.g. fever and cough for 3 days"
+            }
+          },
+          "start": {
+            "type": "string",
+            "description": "appointment date-time, ISO 8601",
+            "x-ui": {
+              "widget": "date",
+              "label": "Appointment date"
+            }
+          }
+        },
+        "required": [
+          "patient_name",
+          "phone",
+          "start"
+        ]
+      },
+      "handler": {
+        "kind": "object.create",
+        "object": "appointment"
+      }
+    },
+    {
+      "name": "list_appointments",
+      "description": "List appointments, optionally filtered by the patient's phone number. (Date filtering is available on the dashboard.)",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "filter to one patient's appointments"
+          }
+        }
+      },
+      "handler": {
+        "kind": "object.query",
+        "object": "appointment"
+      }
+    },
+    {
+      "name": "log_visit",
+      "description": "Record the outcome of a consultation: diagnosis, prescription, and an optional follow-up date.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "patient_name": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "diagnosis": {
+            "type": "string"
+          },
+          "prescription": {
+            "type": "string"
+          },
+          "follow_up": {
+            "type": "string",
+            "description": "follow-up date, ISO 8601, optional",
+            "x-ui": {
+              "widget": "date",
+              "label": "Follow-up date"
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "diagnosis"
+        ]
+      },
+      "handler": {
+        "kind": "object.create",
+        "object": "visit"
+      }
+    },
+    {
+      "name": "cancel_appointment",
+      "description": "Cancel the caller's most recently booked appointment (matched by phone number).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "the caller's phone number"
+          }
+        },
+        "required": [
+          "phone"
+        ]
+      },
+      "handler": {
+        "kind": "object.update",
+        "object": "appointment",
+        "match": "phone",
+        "set": {
+          "status": "cancelled"
+        }
+      }
+    },
+    {
+      "name": "delete_appointment",
+      "description": "Permanently delete the caller's most recent appointment record (matched by phone). Prefer cancel_appointment for a normal cancellation; this removes the row entirely.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "the caller's phone number"
+          }
+        },
+        "required": [
+          "phone"
+        ]
+      },
+      "handler": {
+        "kind": "object.delete",
+        "object": "appointment",
+        "match": "phone"
+      }
+    },
+    {
+      "name": "update_patient",
+      "description": "Update an existing patient's details \u2014 status, condition, or notes (matched by phone number).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "the patient's phone number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "inactive"
+            ]
+          },
+          "condition": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ]
+      },
+      "handler": {
+        "kind": "object.update",
+        "object": "patient",
+        "match": "phone"
+      }
+    }
+  ],
+  "ui": {
+    "entry": "ui/index.tsx",
+    "pages": [
+      {
+        "id": "patients",
+        "title": "Patients",
+        "icon": "users",
+        "menu": true
+      },
+      {
+        "id": "appointments",
+        "title": "Appointments",
+        "icon": "calendar",
+        "menu": true
+      },
+      {
+        "id": "visits",
+        "title": "Visits",
+        "icon": "clipboard",
+        "menu": true
+      },
+      {
+        "id": "activity",
+        "title": "Activity",
+        "icon": "phone",
+        "menu": true
+      },
+      {
+        "id": "reports",
+        "title": "Reports",
+        "icon": "chart",
+        "menu": true
+      }
+    ],
+    "extensions": [
+      {
+        "slot": "agents_overview_panel",
+        "page_id": "reports",
+        "title": "Agent insights"
+      }
+    ]
+  },
+  "agents": [
+    {
+      "id": "front-desk",
+      "name": "Clinic Front Desk",
+      "description": "A friendly receptionist that finds patients, books and cancels appointments, and logs visits \u2014 using the clinic's tools.",
+      "systemPrompt": "You are the front-desk receptionist for a busy clinic. Greet callers warmly, identify the patient, and help them book, reschedule or cancel appointments. Always confirm the date and time back to the caller. Use the clinic tools to look up and update records.",
+      "llmModel": "gpt-4o-mini",
+      "ttsVoice": "rachel",
+      "sessionConfig": {
+        "opener": "Thank you for calling the clinic! How can I help you today?",
+        "recordingEnabled": true
+      }
+    },
+    {
+      "id": "smart-front-desk",
+      "name": "Smart Front Desk (auto-lookup)",
+      "description": "A multi-context flow that DETERMINISTICALLY looks the caller up in the clinic's patient records (an app-tool flow node) before greeting them by name.",
+      "llmModel": "gpt-4o-mini",
+      "ttsVoice": "rachel",
+      "sessionConfig": {
+        "opener": "One moment while I pull up your details."
+      },
+      "metadata": {
+        "flow": {
+          "schema": "v1",
+          "startNodeId": "lookup",
+          "routerModel": "gpt-4o-mini",
+          "nodes": [
+            {
+              "id": "lookup",
+              "name": "Look up caller",
+              "config": {
+                "name": "find_patient",
+                "kind": "app",
+                "config": {
+                  "app_id": "clinic-crm",
+                  "object": "patient",
+                  "handler": {
+                    "kind": "object.query"
+                  }
+                }
+              },
+              "kind": "tool"
+            },
+            {
+              "id": "greet",
+              "name": "Greeting",
+              "prompt": "If a patient name was found, greet them warmly by name; otherwise greet them as a new caller. Then ask how you can help.",
+              "expectsInput": true,
+              "kind": "conversation"
+            }
+          ],
+          "edges": [
+            {
+              "id": "e1",
+              "source": "lookup",
+              "target": "greet"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "intake-flow",
+      "name": "Patient Intake (multi-step)",
+      "description": "A guided multi-context flow: greet the caller, capture their details, then book the appointment.",
+      "llmModel": "gpt-4o-mini",
+      "ttsVoice": "rachel",
+      "sessionConfig": {
+        "opener": "Hi! I'll help you get registered and booked in."
+      },
+      "metadata": {
+        "flow": {
+          "schema": "v1",
+          "startNodeId": "greeting",
+          "routerModel": "gpt-4o-mini",
+          "nodes": [
+            {
+              "id": "greeting",
+              "name": "Greeting",
+              "prompt": "Greet the caller and ask whether they are a new or returning patient.",
+              "expectsInput": true,
+              "kind": "conversation"
+            },
+            {
+              "id": "capture",
+              "name": "Capture details",
+              "prompt": "Collect the patient's full name and phone number, then register them if new.",
+              "expectsInput": true,
+              "kind": "conversation"
+            },
+            {
+              "id": "booking",
+              "name": "Book appointment",
+              "prompt": "Offer available slots and book the appointment using the clinic tools. Confirm the date and time.",
+              "expectsInput": true,
+              "kind": "conversation"
+            }
+          ],
+          "edges": [
+            {
+              "id": "e1",
+              "source": "greeting",
+              "target": "capture"
+            },
+            {
+              "id": "e2",
+              "source": "capture",
+              "target": "booking"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "agentTeams": [
+    {
+      "id": "front-desk-team",
+      "name": "Front Desk Team",
+      "description": "A triage agent that routes callers, handing off to a booking specialist.",
+      "entry": "triage",
+      "members": [
+        {
+          "ref": "triage",
+          "name": "Triage",
+          "systemPrompt": "You are the clinic's triage agent. Greet the caller, find out what they need, and hand off to the booking specialist when they want an appointment.",
+          "llmModel": "gpt-4o-mini",
+          "ttsVoice": "rachel",
+          "metadata": {
+            "flow": {
+              "schema": "v1",
+              "startNodeId": "greet",
+              "routerModel": "gpt-4o-mini",
+              "nodes": [
+                {
+                  "id": "greet",
+                  "name": "Greeting",
+                  "prompt": "Greet the caller and ask how you can help.",
+                  "expectsInput": true,
+                  "kind": "conversation"
+                },
+                {
+                  "id": "toBooking",
+                  "name": "To Booking",
+                  "config": {
+                    "agents": [
+                      {
+                        "agentId": "booking",
+                        "label": "booking",
+                        "mode": "transfer"
+                      }
+                    ]
+                  },
+                  "kind": "agent"
+                }
+              ],
+              "edges": [
+                {
+                  "id": "e1",
+                  "source": "greet",
+                  "target": "toBooking"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "ref": "booking",
+          "name": "Booking Specialist",
+          "systemPrompt": "You are the clinic's booking specialist. Find or register the patient and book/cancel the appointment using the clinic tools. Confirm the date and time.",
+          "llmModel": "gpt-4o-mini",
+          "ttsVoice": "rachel",
+          "sessionConfig": {
+            "opener": "I can help you book your appointment."
+          }
+        }
+      ]
+    }
+  ],
+  "knowledgeBases": [
+    {
+      "id": "clinic-info",
+      "name": "Clinic Info",
+      "description": "Clinic hours, services and policies the front-desk agent answers from.",
+      "documents": [
+        {
+          "title": "Clinic hours and services",
+          "body": "Sunrise Family Clinic is open Monday to Saturday from 9 AM to 7 PM and is closed on Sundays. We provide general medicine, pediatrics, dermatology, and basic lab tests. New patients should arrive 15 minutes early to complete registration. We accept cash, UPI, and major insurance. Appointment cancellations require at least 4 hours notice. For emergencies outside opening hours, call the on-call doctor listed on our website."
+        }
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "appointment-followup",
+      "name": "Auto follow-up on new appointment",
+      "trigger": {
+        "event": "object.appointment.created"
+      },
+      "steps": [
+        {
+          "kind": "delay",
+          "seconds": 1
+        },
+        {
+          "kind": "create-object",
+          "object": "visit",
+          "data": {
+            "patient_name": "{{trigger.data.patient_name}}",
+            "phone": "{{trigger.data.phone}}",
+            "notes": "Auto follow-up task created by workflow"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lead-callback",
+      "name": "Schedule callback on new lead",
+      "trigger": {
+        "event": "object.lead.created"
+      },
+      "steps": [
+        {
+          "kind": "create-object",
+          "object": "visit",
+          "data": {
+            "patient_name": "{{trigger.data.name}}",
+            "phone": "{{trigger.data.phone}}",
+            "notes": "Inbound lead \u2014 schedule callback"
+          }
+        }
+      ]
+    },
+    {
+      "id": "lead-http-notify",
+      "name": "Notify external CRM on new lead (B1 http step)",
+      "trigger": {
+        "event": "object.lead.created"
+      },
+      "steps": [
+        {
+          "kind": "http",
+          "method": "POST",
+          "url": "https://postman-echo.com/post",
+          "headers": {
+            "x-source": "telenow-workflow"
+          },
+          "body": {
+            "lead_name": "{{trigger.data.name}}",
+            "lead_phone": "{{trigger.data.phone}}",
+            "source": "{{trigger.data.source}}"
+          }
+        }
+      ]
+    }
+  ],
+  "inboundHooks": [
+    {
+      "id": "lead-intake",
+      "object": "lead",
+      "key": "phone",
+      "map": {
+        "name": "full_name",
+        "phone": "phone_number",
+        "source": "ad_id"
+      },
+      "verify": {
+        "header": "x-hub-signature-256",
+        "prefix": "sha256=",
+        "algo": "sha256",
+        "encoding": "hex"
+      }
+    }
+  ]
+}

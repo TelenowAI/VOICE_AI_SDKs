@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/telenow/telenow.app.schema.json",
+  "id": "live-coach",
+  "version": "1.0.0",
+  "name": "Live Assist",
+  "runtime": "declarative",
+  "category": "productivity",
+  "blurb": "Real-time sentiment and AI coaching for your reps on live softphone calls.",
+  "icon": "sparkles",
+  "scopes": [
+    "calls:transcribe:live",
+    "calls:read",
+    "ai:llm",
+    "kb:read",
+    "members:read",
+    "user:profile",
+    "objects:coach_user_config",
+    "objects:coach_playbook",
+    "objects:coach_session"
+  ],
+  "objects": [
+    {
+      "type": "coach_user_config",
+      "label": "Coaching setup (per user)",
+      "fields": [
+        { "key": "userId", "type": "string", "index": true },
+        { "key": "enabled", "type": "boolean", "default": false, "index": true },
+        { "key": "playbookId", "type": "string", "relation": { "object": "coach_playbook" } },
+        { "key": "kbId", "type": "string" }
+      ]
+    },
+    {
+      "type": "coach_playbook",
+      "label": "Coaching playbook",
+      "fields": [
+        { "key": "name", "type": "string", "index": true },
+        { "key": "goal", "type": "text" },
+        { "key": "tone", "type": "string" },
+        { "key": "objectionStyle", "type": "text" }
+      ]
+    },
+    {
+      "type": "coach_session",
+      "label": "Coached call",
+      "fields": [
+        { "key": "sessionId", "type": "string", "index": true },
+        { "key": "userId", "type": "string", "index": true },
+        { "key": "sentimentTimeline", "type": "json" },
+        { "key": "suggestions", "type": "json" },
+        { "key": "finalSentiment", "type": "number" },
+        { "key": "outcome", "type": "string" }
+      ]
+    }
+  ],
+  "knowledgeBases": [
+    {
+      "key": "default-playbook",
+      "name": "Coaching Knowledge",
+      "description": "Product facts, objection handling, and playbook snippets the coach grounds its suggestions in."
+    }
+  ],
+  "ui": {
+    "entry": "ui/index.tsx",
+    "pages": [
+      { "id": "coach", "title": "Live Assist", "icon": "sparkles" },
+      { "id": "admin", "title": "Live Assist setup", "icon": "settings", "menu": true },
+      { "id": "analytics", "title": "Live Assist analytics", "icon": "chart", "menu": true }
+    ],
+    "extensions": [
+      { "slot": "softphone_call_panel", "page_id": "coach", "title": "Live Assist" }
+    ]
+  }
+}
