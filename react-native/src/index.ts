@@ -71,11 +71,13 @@ export interface TelenowCallOptions {
   uplinkEncoding?: 'pcm16' | 'mulaw';
   /**
    * Voice-processing toggles, applied to the native capture session.
-   * Defaults: echoCancellation true, noiseSuppression true, autoGainControl false.
-   * Android: AcousticEchoCanceler / NoiseSuppressor / AutomaticGainControl
-   * effects (hardware-dependent — no-ops where the device lacks them).
-   * iOS: echoCancellation/noiseSuppression ride together via the voice-chat
-   * audio session; autoGainControl is managed by the OS.
+   * Defaults: echoCancellation true, noiseSuppression true, autoGainControl true.
+   * AGC defaults ON to match mobile-browser getUserMedia: a far-field / quiet
+   * Android mic otherwise sits below the server barge-in gate and can't
+   * interrupt the agent. Android: AcousticEchoCanceler / NoiseSuppressor /
+   * AutomaticGainControl effects (hardware-dependent — no-ops where the device
+   * lacks them). iOS: echoCancellation/noiseSuppression/AGC all ride together
+   * via the input node's Voice-Processing I/O, so the AGC flag is a no-op there.
    */
   audio?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean };
   /**
@@ -100,6 +102,7 @@ export class TelenowCall {
   private jitter = new AdaptiveJitterBuffer();
   private clock = 0;
   private micSub?: { remove: () => void };
+  private errSub?: { remove: () => void };
   private ended = false;
   private readonly uplinkRate: number;
   /** Wall-clock ms until which queued agent audio is still playing (halfDuplex gate). */
@@ -154,7 +157,7 @@ export class TelenowCall {
       this.uplinkRate,
       audio.echoCancellation ?? true,
       audio.noiseSuppression ?? true,
-      audio.autoGainControl ?? false,
+      audio.autoGainControl ?? true,
     );
     this.micSub = emitter.addListener('TelenowMicFrame', (b64: string) => {
       const shorts = leBytesToInt16(base64ToBytes(b64));
@@ -162,6 +165,15 @@ export class TelenowCall {
       if (this.micGated()) return; // halfDuplex: agent is speaking
       const out = this.opts.uplinkEncoding === 'pcm16' ? int16ToLEBytes(shorts) : pcm16ToMulaw(shorts);
       this.socket?.send(JSON.stringify({ event: 'media', data: bytesToBase64(out) }));
+    });
+    // The native module emits TelenowAudioError when the mic fails to initialize
+    // (busy, permission race, unsupported rate). Without a listener the socket
+    // stays open and reports 'live' with a dead mic — surface 'error' and tear
+    // down instead of a silently hanging call.
+    this.errSub = emitter.addListener('TelenowAudioError', (msg: string) => {
+      console.warn(`TelenowCall: capture error — ${msg}`);
+      this.onState?.('error');
+      this.teardown();
     });
   }
 
@@ -235,6 +247,8 @@ export class TelenowCall {
     this.ended = true;
     this.micSub?.remove();
     this.micSub = undefined;
+    this.errSub?.remove();
+    this.errSub = undefined;
     this.socket = undefined;
     // WebRTC: disconnect the room + stop the native audio session. The
     // TelenowAudio native module is only used on the WebSocket path.

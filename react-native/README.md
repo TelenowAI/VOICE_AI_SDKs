@@ -70,7 +70,7 @@ call.stop();
 | `baseUrl` | `string` | API origin (default `''`; set `https://api.telenow.ai`). |
 | `variables` | `Record<string,string>` | [Context variables](https://telenow.ai/docs/context-variables) for the agent prompt. |
 | `uplinkEncoding` | `'mulaw' \| 'pcm16'` | Default `'mulaw'` (8 kHz) — what the platform decodes. Keep it. |
-| `audio` | `{ echoCancellation?, noiseSuppression?, autoGainControl? }` | Voice-processing toggles, defaults `true / true / false`. Android: `AcousticEchoCanceler` / `NoiseSuppressor` / `AutomaticGainControl` effects (hardware-dependent). iOS: AEC + NS ride together via the voice-chat session; AGC is OS-managed. |
+| `audio` | `{ echoCancellation?, noiseSuppression?, autoGainControl? }` | Voice-processing toggles, defaults `true / true / true`. Android: `AcousticEchoCanceler` / `NoiseSuppressor` / `AutomaticGainControl` effects (hardware-dependent) — AGC on so a quiet/far-field mic can still barge in. iOS: AEC + NS + AGC ride together via the input node's Voice-Processing I/O (enabled by the SDK), so the AGC flag is a no-op there. |
 | `turnTaking` | `'duplex' \| 'halfDuplex'` | See **Turn-taking** below. Default `'duplex'`. |
 | `halfDuplexTailMs` | `number` | Extra mic-gate time after agent audio drains (halfDuplex only, default 250). |
 | `reconnect` | `{ maxAttempts?, baseDelayMs?, maxDelayMs?, jitter? }` | Default 6 attempts, 0.5 s → 10 s, ±30 %. |
@@ -100,10 +100,11 @@ Test on a real device, or switch to `halfDuplex`.
 
 ### What the SDK handles
 
-- **Echo & noise** — iOS `AVAudioSession` `.voiceChat` (VoiceProcessingIO),
-  Android `VOICE_COMMUNICATION` source: hardware AEC/NS/AGC. Agent playback is
-  routed through the voice-processing unit so the echo canceller removes the
-  agent's own voice from the mic.
+- **Echo & noise** — iOS enables the input node's **Voice-Processing I/O**
+  (`setVoiceProcessingEnabled(true)`, under a `.voiceChat` session — the session
+  mode alone is not enough on `AVAudioEngine`), Android `VOICE_COMMUNICATION`
+  source: hardware AEC/NS/AGC. Agent playback shares that processing unit so the
+  echo canceller removes the agent's own voice from the mic.
 - **Barge-in** — interrupting the agent flushes queued audio instantly
   (native `clearPlayback`).
 - **Reconnect** — drops retry with exponential backoff while audio keeps

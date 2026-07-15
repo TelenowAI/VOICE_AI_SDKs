@@ -134,6 +134,14 @@ class BrowserMedia implements MediaAdapter {
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new Ctx();
     await ctx.resume();
+    // Self-heal if the browser suspends the context mid-call (output-device
+    // switch on Windows, tab backgrounding, OS audio interruption) — else audio
+    // goes silent with no recovery. Mirrors the web-call widget.
+    ctx.onstatechange = () => {
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => { /* noop */ });
+      }
+    };
     this.ctx = ctx;
     this.playback = new PlaybackEngine(ctx);
     this.capture = new CaptureEngine({

@@ -236,6 +236,16 @@ class TelenowCall(private val options: TelenowCallOptions) {
             AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, frame * 2) * 2,
         )
+        // If the mic failed to initialize (busy, permission race, unsupported
+        // config) the record is STATE_UNINITIALIZED. startRecording() would throw
+        // and read() would spin on a dead mic — surface ERROR instead of a silent
+        // dead call, skipping startRecording/thread.
+        if (record?.state != AudioRecord.STATE_INITIALIZED) {
+            record?.release()
+            record = null
+            onState?.invoke(CallState.ERROR)
+            return
+        }
         record?.startRecording()
         recording = true
         thread {

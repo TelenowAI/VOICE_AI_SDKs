@@ -35,12 +35,30 @@ class TelenowAudio: RCTEventEmitter {
     _ = autoGainControl // iOS manages AGC inside voice processing; no separate toggle
     captureRate = rate.doubleValue
     let session = AVAudioSession.sharedInstance()
-    // .voiceChat enables Apple's voice processing (AEC + NS together).
-    // Turning BOTH toggles off opts out of voice processing entirely.
-    let mode: AVAudioSession.Mode = (echoCancellation || noiseSuppression) ? .voiceChat : .default
+    // .voiceChat configures the session for VoIP, but on AVAudioEngine the mode
+    // ALONE does NOT route the mic through Apple's Voice-Processing I/O — the tap
+    // still gets the raw mic. The actual AEC/NS/AGC only engages when we call
+    // `setVoiceProcessingEnabled(true)` on the input node (below). Toggling both
+    // flags off opts out of voice processing entirely.
+    let wantsProcessing = echoCancellation || noiseSuppression
+    let mode: AVAudioSession.Mode = wantsProcessing ? .voiceChat : .default
     try? session.setCategory(.playAndRecord, mode: mode, options: [.defaultToSpeaker, .allowBluetooth])
     try? session.setActive(true)
     let input = engine.inputNode
+    // Engage the Voice-Processing I/O unit so the captured mic is echo-cancelled.
+    // Without this, on a speakerphone call the agent's own TTS leaks back into the
+    // tap, the agent transcribes itself and self-barges in a "Hello?… Hello?" loop.
+    // Enabling VPIO can change the input node's format, so re-query it AFTER for
+    // the tap. iOS 13+ (older OSes fall back to the session-mode-only behaviour).
+    if wantsProcessing {
+      if #available(iOS 13.0, *) {
+        do {
+          try input.setVoiceProcessingEnabled(true)
+        } catch {
+          NSLog("TelenowAudio: setVoiceProcessingEnabled failed, mic will not be echo-cancelled: \(error.localizedDescription)")
+        }
+      }
+    }
     let inFormat = input.outputFormat(forBus: 0)
     input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in
       guard let self, let ch = buffer.floatChannelData?[0] else { return }
