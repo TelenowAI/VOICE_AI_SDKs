@@ -85,8 +85,8 @@ export type TurnTaking = 'duplex' | 'halfDuplex';
 
 /**
  * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
- * (`next_turn`), once a human hands the call back (`held`), or right away (`speaking_now`, for
- * `respond: 'when_idle'` — not sent by the server yet).
+ * (`next_turn`), once a human hands the call back or the caller takes the agent off hold (`held`),
+ * or right away (`speaking_now`, for `respond: 'when_idle'` when the line is free).
  */
 export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
 
