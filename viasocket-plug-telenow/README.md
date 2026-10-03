@@ -22,7 +22,7 @@ viaSocket's public docs don't document a programmatic subscribe/unsubscribe cont
 
 1. In the trigger step, viaSocket issues a webhook URL.
 2. Register it with Telenow: `POST /api/v1/hooks` with `{"event": "<event>", "target_url": "<viasocket url>", "source": "viasocket"}` (the builder can run this as the trigger's "subscribe" call if their instant-trigger contract supports it — confirm with the viaSocket team during review; otherwise document the one-curl setup for users).
-3. Events: `call.started`, `call.ended`, `call.analyzed`, `recording.ready`, `transcript.ready`, `tool.invoked`. Sample payloads: `samples/*.json` (also live at `GET /api/v1/events/sample?type=…`).
+3. Events: `call.started`, `call.ended`, `call.machine_detected`, `call.analyzed`, `recording.ready`, `transcript.ready`, `tool.invoked`. Sample payloads: `samples/*.json` (also live at `GET /api/v1/events/sample?type=…`).
 4. Unsubscribe: `DELETE /api/v1/hooks/{id}` (idempotent).
 
 ## 4. Actions

@@ -56,8 +56,66 @@ export interface CreateCallRequest {
   identifier?: string;
   /** Override the agent's opening line for this call. */
   firstResponse?: string;
-  /** Answering-machine detection: 'true' = auto-voicemail, 'hangup' = hang up (Plivo only). */
+  /**
+   * Answering-machine detection. `'true'` waits for the greeting and leaves the agent's
+   * voicemail message; `'hangup'` drops the call as soon as a machine answers.
+   *
+   * Omitting this is NOT the same as "off" — the agent's own voicemail message, Call Screen
+   * or IVR Hangup settings arm detection by themselves, because none of them is reachable
+   * without a machine verdict. Supported on Plivo, Twilio, Vobiz and Vonage; inert on Exotel
+   * (needs account-level AnsweredBy detection) and unavailable on SIP trunks.
+   */
   machineDetection?: 'true' | 'hangup';
+  /**
+   * Caller ID by **id** — from `GET /api/v1/numbers`. Prefer {@link fromNumber} unless you
+   * already hold an id; ids are stable if a number is re-formatted, but you rarely have one
+   * to hand. A number you don't own is rejected with 400 rather than falling back to another.
+   *
+   * Omit both to use the agent's default: its designated default caller ID, else the number
+   * allocated to it for inbound.
+   */
+  fromNumberId?: string;
+  /**
+   * Caller ID as the **number itself**, E.164 (e.g. `+14155550123`) — the everyday form, since
+   * you know your number but not its UUID. Matched on digits alone, so spacing and formatting
+   * don't matter.
+   *
+   * Not a spoofing vector: the string is looked up among your organization's own live numbers
+   * and never passed to the carrier, so another org's number is the same 400 as a foreign id.
+   *
+   * Send this or {@link fromNumberId}, not both — the API rejects that with 400.
+   */
+  fromNumber?: string;
+  /**
+   * Park the dial instead of placing it now.
+   *
+   * `/initiate-call` places ONE call and refuses the overflow with `429` once your
+   * concurrency cap is full, so firing a list at it means handling a burst of retries
+   * yourself. With `queue: true` the number is parked in a managed per-agent queue that a
+   * worker drains at your organization's concurrency, with automatic retries, DNC
+   * suppression and de-duplication — fire 200 numbers in parallel and they all land in one
+   * queue, deduped, with no `429` to handle.
+   *
+   * **This changes the response**: `202` and a {@link QueuedCallResult} (no `sessionId` —
+   * there is no live session yet). Narrow on `'queued' in result`.
+   *
+   * {@link firstResponse} and {@link variables} are honored here too — the opener is stored
+   * per number and replayed on every attempt, retries included. Two enqueues of a number
+   * already live in the queue dedupe to one, and the FIRST opener wins.
+   */
+  queue?: boolean;
+  /** Queue mode only. Total dial attempts per number incl. the first (1–10, default 3). */
+  maxAttempts?: number;
+  /**
+   * Queue mode only. Base backoff between attempts in seconds; grown exponentially by the
+   * worker and capped at 1h (5–3600, default 300).
+   */
+  retryBackoffSecs?: number;
+  /**
+   * Queue mode only. Redial an unanswered/busy call (default `true`). Hard failures always
+   * retry until {@link maxAttempts} regardless.
+   */
+  retryOnNoAnswer?: boolean;
   callType?: string;
   userId?: string;
 }
@@ -66,6 +124,20 @@ export interface CallResult {
   callId?: string;
   status?: string;
   phoneNumber?: string;
+}
+
+/** What `calls.create` returns when `queue: true` — the call has not been placed yet. */
+export interface QueuedCallResult {
+  queued: true;
+  /** The managed queue this number joined. Calls sharing a caller ID + retry/AMD policy share one. */
+  campaignId: string;
+  /**
+   * True when the number was ALREADY live in the queue, so nothing new was added — a number
+   * is held unique while pending/dialing (a finished number can be re-queued later).
+   */
+  deduplicated: boolean;
+  /** Queue depth after this call. */
+  pendingAhead: number;
 }
 
 export interface CreateManualCallRequest {
@@ -94,6 +166,24 @@ export interface ManualCallSession {
   fromNumber?: string;
   toNumber?: string;
   status?: string;
+}
+
+/**
+ * Where `calls.play()` gets its audio — exactly one of the two.
+ *
+ * `trackId` is an org audio-library track: uploaded and normalised once, cached
+ * server-side, no network on the call. `url` is fetched per play, so audio your
+ * system renders per call is never served stale — at the cost of a fetch each
+ * time. HTTPS only, 16-bit PCM WAV, 8 MB cap.
+ */
+export type PlayAudioSource = { trackId: string; url?: never } | { url: string; trackId?: never };
+
+export interface PlayAudioResult {
+  sessionId: string;
+  trackId: string | null;
+  url: string | null;
+  /** How long the recording runs. Playback is queued, not awaited. */
+  durationMs: number;
 }
 
 export interface InitWebCallRequest {
@@ -166,6 +256,29 @@ export interface WebCallSession {
   room?: string;
 }
 
+/** A note for `calls.sendContext` (`LIVE_CONTEXT_NOTES_PLAN.md`). Never counted as something the caller said. */
+export interface ContextNote {
+  text: string;
+  /** A later note with the same key replaces this one (payment status, order state…). */
+  key?: string;
+  /** `'when_idle'`: let the agent speak up about it once the line is quiet. Default: silent. */
+  respond?: 'none' | 'when_idle';
+}
+
+/** What `calls.sendContext` returns. */
+export interface ContextNoteResult {
+  noteId: string;
+  key: string | null;
+  /** When the agent will see it: from its next reply, or once a human hands the call back. */
+  delivery: 'next_turn' | 'held' | 'speaking_now';
+}
+
+/** What `calls.sendActivity` returns. */
+export interface ActivityResult {
+  /** How long until the agent would check in (ms), or `null` when no check-in is armed. */
+  nextCheckinInMs: number | null;
+}
+
 export class TelenowError extends Error {
   constructor(
     message: string,
@@ -224,14 +337,20 @@ export class Telenow {
   };
 
   readonly calls = {
-    create: (r: CreateCallRequest): Promise<CallResult> =>
-      this.req<CallResult>('POST', '/api/sessions/initiate-call', {
+    create: (r: CreateCallRequest): Promise<CallResult | QueuedCallResult> =>
+      this.req<CallResult | QueuedCallResult>('POST', '/api/sessions/initiate-call', {
         agentId: r.agentId,
         mobileNumber: r.to,
         variables: r.variables,
         identifier: r.identifier,
         firstResponse: r.firstResponse,
         machineDetection: r.machineDetection,
+        fromNumberId: r.fromNumberId,
+        fromNumber: r.fromNumber,
+        queue: r.queue,
+        maxAttempts: r.maxAttempts,
+        retryBackoffSecs: r.retryBackoffSecs,
+        retryOnNoAnswer: r.retryOnNoAnswer,
         callType: r.callType,
         userId: r.userId,
       }),
@@ -266,8 +385,53 @@ export class Telenow {
         fromNumber: r.from,
         userId: r.userId,
       }),
+    /**
+     * Tell the agent something mid-call — a payment that went through, an order that shipped, a
+     * supervisor's steer — without it counting as something the caller said. Works on any live
+     * call (phone, SIP, web) by session id. Silent unless `respond: 'when_idle'`. A refusal
+     * throws `TelenowError` with `err.body.error` the code: 404 — no such call in your org; 409
+     * `not_live` (the call has ended or not started), `no_agent` (a person has the call for good),
+     * `engine_unsupported`; 413 `too_large` (`err.body.maxChars` — how many characters, as Unicode
+     * code points, fit right now); 400 `invalid_respond` / `empty`; 503 `owner_unknown` /
+     * `owner_unreachable` (retry after `Retry-After`); 429 when you are over the API's rate limit.
+     */
+    sendContext: (sessionId: string, note: ContextNote): Promise<ContextNoteResult> =>
+      this.req<ContextNoteResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/context`, note),
+    /**
+     * "The caller is still here, just busy" (paying, reading, typing): restarts the agent's
+     * silence check-in (or, in a wait the caller asked for, that wait's nudges) so it doesn't ask
+     * "are you still there?". `nextCheckinInMs`: how long until the agent would speak up
+     * unprompted — ping again before it runs out while they stay busy; `null` when nothing is armed
+     * right now (a hold, a wait still being acknowledged): try again after the conversation moves
+     * on. Refusals as `sendContext` (404, 409 `not_live` / `no_agent`, 503).
+     */
+    sendActivity: (sessionId: string): Promise<ActivityResult> =>
+      this.req<ActivityResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/activity`, {}),
     transfer: (sessionId: string, to: string): Promise<unknown> =>
       this.req('POST', `/api/sessions/${encodeURIComponent(sessionId)}/transfer`, { to }),
+    /**
+     * Play a recording into a LIVE call — your own audio, not TTS.
+     *
+     * Pass `trackId` for a track uploaded to the org audio library (normalised
+     * once, no fetch on the call) or `url` for a 16-bit PCM WAV fetched per play
+     * (for audio your system renders per call). Exactly one.
+     *
+     * Resolves as soon as playback is QUEUED, with `durationMs` — a five-minute
+     * recording would otherwise hold the request open for five minutes. Playing
+     * again supersedes whatever is currently playing.
+     *
+     * Works on an agent call and on a manual (softphone) call alike: combined
+     * with `createManual` and the `call.dtmf` webhook, that's a fully
+     * programmable call — dial, play your recording, collect keypresses — with
+     * no browser leg and no AI in the loop.
+     */
+    play: (sessionId: string, source: PlayAudioSource): Promise<PlayAudioResult> =>
+      this.req<PlayAudioResult>(
+        'POST',
+        `/api/sessions/${encodeURIComponent(sessionId)}/play`,
+        source,
+      ),
+    /** End the session — hangs up the live call. */
     end: (sessionId: string): Promise<unknown> =>
       this.req('DELETE', `/api/sessions/${encodeURIComponent(sessionId)}`),
   };

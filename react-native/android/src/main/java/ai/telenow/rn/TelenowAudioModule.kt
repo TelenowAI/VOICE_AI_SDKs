@@ -32,6 +32,11 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
       .emit("TelenowMicFrame", b64)
   }
 
+  private fun emitError(msg: String) {
+    ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+      .emit("TelenowAudioError", msg)
+  }
+
   @ReactMethod
   fun startPlayback(rate: Int) {
     val minBuf = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -64,6 +69,16 @@ class TelenowAudioModule(private val ctx: ReactApplicationContext) : ReactContex
       rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
       maxOf(minBuf, frame * 2) * 2,
     )
+    // If the mic failed to initialize (busy, permission race, or an unsupported
+    // rate/buffer) the record lands in STATE_UNINITIALIZED. startRecording() then
+    // throws IllegalStateException and read() spins returning ERROR — a silently
+    // dead mic. Release, surface an error event, and bail before touching it.
+    if (record?.state != AudioRecord.STATE_INITIALIZED) {
+      record?.release()
+      record = null
+      emitError("AudioRecord failed to initialize")
+      return
+    }
     // Explicit voice-processing toggles. Effects are hardware-dependent —
     // create() returns null where unsupported (notably emulators), in which
     // case the platform's VOICE_COMMUNICATION defaults still apply.

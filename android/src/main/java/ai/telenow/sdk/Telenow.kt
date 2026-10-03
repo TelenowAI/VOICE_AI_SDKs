@@ -11,6 +11,10 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AudioEffect
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.util.Base64
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -76,6 +80,10 @@ class TelenowCall(private val options: TelenowCallOptions) {
     private var sessionId = ""
     private var wsUrl = ""
     private var record: AudioRecord? = null
+    /// Voice-processing effects bound to the record's session. Held so they can be
+    /// released with it — an AudioEffect outliving its AudioRecord leaks the
+    /// underlying hardware slot, and there are only a few per device.
+    private val effects = mutableListOf<AudioEffect>()
     private var track: AudioTrack? = null
 
     private val uplinkRate = if (options.uplinkEncoding == "pcm16") 16000 else 8000
@@ -104,6 +112,8 @@ class TelenowCall(private val options: TelenowCallOptions) {
         stopped = true
         recording = false
         try { ws?.close(1000, null) } catch (_: Exception) {}
+        // Released before the record they are attached to, per AudioEffect's contract.
+        effects.forEach { runCatching { it.release() } }; effects.clear()
         record?.let { it.stop(); it.release() }; record = null
         track?.let { it.stop(); it.release() }; track = null
         onState?.invoke(CallState.ENDED)
@@ -236,6 +246,37 @@ class TelenowCall(private val options: TelenowCallOptions) {
             AudioFormat.ENCODING_PCM_16BIT,
             maxOf(minBuf, frame * 2) * 2,
         )
+        // If the mic failed to initialize (busy, permission race, unsupported
+        // config) the record is STATE_UNINITIALIZED. startRecording() would throw
+        // and read() would spin on a dead mic — surface ERROR instead of a silent
+        // dead call, skipping startRecording/thread.
+        if (record?.state != AudioRecord.STATE_INITIALIZED) {
+            record?.release()
+            record = null
+            onState?.invoke(CallState.ERROR)
+            return
+        }
+        // VOICE_COMMUNICATION asks the HAL for AEC/NS/AGC, but only as a HINT —
+        // whether they actually engage is device-dependent, and on the handsets
+        // where they silently do not, the agent's own TTS returns through the
+        // speaker, gets transcribed, and the agent interrupts itself. Attach the
+        // effects explicitly, exactly as the React Native module already does
+        // (sdk/react-native/.../TelenowAudioModule.kt).
+        //
+        // Effects are hardware-dependent: create() returns null where unsupported
+        // (notably emulators), in which case the VOICE_COMMUNICATION defaults are
+        // still whatever the platform provides.
+        record?.audioSessionId?.let { sid ->
+            if (AcousticEchoCanceler.isAvailable()) {
+                AcousticEchoCanceler.create(sid)?.also { it.enabled = true; effects.add(it) }
+            }
+            if (NoiseSuppressor.isAvailable()) {
+                NoiseSuppressor.create(sid)?.also { it.enabled = true; effects.add(it) }
+            }
+            if (AutomaticGainControl.isAvailable()) {
+                AutomaticGainControl.create(sid)?.also { it.enabled = true; effects.add(it) }
+            }
+        }
         record?.startRecording()
         recording = true
         thread {

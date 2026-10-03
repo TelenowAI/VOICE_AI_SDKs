@@ -66,6 +66,12 @@ export class TelenowTrigger implements INodeType {
 						description: 'A call finished (optionally with recording and transcript)',
 					},
 					{
+						name: 'Call Machine Detected',
+						value: 'call.machine_detected',
+						description:
+							'Answering-machine detection classified the answer as a machine — carries the carrier verdict and the action taken',
+					},
+					{
 						name: 'Call Started',
 						value: 'call.started',
 						description: 'A call became active',

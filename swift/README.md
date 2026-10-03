@@ -22,6 +22,23 @@ init, so no token or slug ships in the client. The SDK also answers server
 `ping` events (powers the latency breakdown) and flushes queued agent audio on
 `clear` (barge-in).
 
+## Live context notes
+
+Tell the agent something it can't hear — what is on screen, what is in the
+basket — without it counting as something the caller said. The agent must have
+**Notes from the caller's app** on (off by default); it treats such notes as
+unverified.
+
+```swift
+let delivery = try await call.sendContext("Basket: 2 items", key: "basket")   // .nextTurn / .held / .speakingNow
+try await call.sendContext("Payment confirmed in the app", respond: .whenIdle) // speaks up once the line is free
+let nextCheckinMs = try await call.sendActivity()                              // "still here, just busy"
+```
+
+Both throw `TelenowContextError` (`reason`; `maxChars` for `too_large` — Unicode code points:
+`String(text.unicodeScalars.prefix(maxChars))`). Safe to call from any task: each reply pairs with
+its own call. See [Live context notes](https://telenow.ai/docs/live-context-notes).
+
 ## Remaining for production
 - Exercise the `AVAudioEngine` mic-tap + player path on a real iOS device (audio
   can't be verified headlessly).

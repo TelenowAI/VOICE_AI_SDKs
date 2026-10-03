@@ -33,7 +33,12 @@ const callEnded = buildHookTrigger({
     agentId: AID,
     durationSecs: 142,
     messageCount: 18,
-    fromOrTo: '+14155550123',
+    direction: 'inbound',
+    fromNumber: '+14155550123',
+    toNumber: '+14155550100',
+    answeredBy: 'human',
+    endReason: null,
+    fromOrTo: '+14155550100',
     variables: { customer_name: 'Sample Customer' },
     transcript: [
       { role: 'assistant', text: 'Hello! How can I help you today?', at: '2026-01-01T12:00:02Z' },
@@ -44,7 +49,40 @@ const callEnded = buildHookTrigger({
     { key: 'sessionId', label: 'Call ID' },
     { key: 'agentId', label: 'Agent ID' },
     { key: 'durationSecs', label: 'Duration (seconds)', type: 'integer' },
-    { key: 'fromOrTo', label: 'Caller / Dialed Number' },
+    { key: 'direction', label: 'Direction' },
+    { key: 'fromNumber', label: 'Caller Number' },
+    { key: 'toNumber', label: 'Dialed Number' },
+    { key: 'answeredBy', label: 'Answered By (AMD)' },
+    { key: 'endReason', label: 'End Reason' },
+  ],
+});
+
+const callMachineDetected = buildHookTrigger({
+  key: 'call_machine_detected',
+  event: 'call.machine_detected',
+  noun: 'Call',
+  label: 'Call Machine Detected',
+  description:
+    'Triggers when answering-machine detection classifies the answer as a machine — carries the carrier verdict and what the agent did about it (voicemail drop, hangup, or a call-screen message with the call continuing).',
+  sample: {
+    event: 'call.machine_detected',
+    sessionId: SID,
+    agentId: AID,
+    answeredBy: 'machine_start',
+    action: 'voicemail_drop',
+    callContinues: false,
+    direction: 'outbound',
+    fromNumber: '+14155550100',
+    toNumber: '+14155550123',
+    detectedAt: '2026-01-01T12:00:04Z',
+  },
+  outputFields: [
+    { key: 'sessionId', label: 'Call ID' },
+    { key: 'agentId', label: 'Agent ID' },
+    { key: 'answeredBy', label: 'Carrier Verdict' },
+    { key: 'action', label: 'Action Taken' },
+    { key: 'callContinues', label: 'Call Continues', type: 'boolean' },
+    { key: 'toNumber', label: 'Dialed Number' },
   ],
 });
 
@@ -58,14 +96,19 @@ const callStarted = buildHookTrigger({
     event: 'call.started',
     sessionId: SID,
     agentId: AID,
-    from: '+14155550123',
+    direction: 'inbound',
+    fromNumber: '+14155550123',
+    toNumber: '+14155550100',
+    from: '+14155550100',
     variables: { customer_name: 'Sample Customer' },
     startTime: '2026-01-01T12:00:00Z',
   },
   outputFields: [
     { key: 'sessionId', label: 'Call ID' },
     { key: 'agentId', label: 'Agent ID' },
-    { key: 'from', label: 'Caller Number' },
+    { key: 'direction', label: 'Direction' },
+    { key: 'fromNumber', label: 'Caller Number' },
+    { key: 'toNumber', label: 'Dialed Number' },
   ],
 });
 
@@ -145,4 +188,11 @@ const toolInvoked = buildHookTrigger({
   ],
 });
 
-module.exports = { callEnded, callStarted, callAnalyzed, recordingReady, toolInvoked };
+module.exports = {
+  callEnded,
+  callStarted,
+  callMachineDetected,
+  callAnalyzed,
+  recordingReady,
+  toolInvoked,
+};

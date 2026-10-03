@@ -87,10 +87,47 @@ class Telenow:
         variables: Optional[Dict[str, str]] = None,
         identifier: Optional[str] = None,
         first_response: Optional[str] = None,
-        machine_detection: Optional[str] = None,  # "true" (auto-voicemail) | "hangup", Plivo only
+        machine_detection: Optional[str] = None,  # "true" (leave voicemail) | "hangup"
+        from_number: Optional[str] = None,  # caller ID, E.164 — a number your org owns
+        from_number_id: Optional[str] = None,  # the same, by id, if you have one
+        queue: Optional[bool] = None,  # park the dial in a managed queue instead
+        max_attempts: Optional[int] = None,  # queue mode only
+        retry_backoff_secs: Optional[int] = None,  # queue mode only
+        retry_on_no_answer: Optional[bool] = None,  # queue mode only
         call_type: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Place an AI agent call to ``to``.
+
+        ``from_number`` sets the caller ID the recipient sees — pass any number your
+        organization owns, in E.164. It is resolved against your own numbers (never
+        sent to the carrier as-is), so it cannot be used to present a number you do
+        not own. ``from_number_id`` is the same choice by id, for callers who already
+        hold one; send one or the other, not both. Omit both to use the agent's
+        default number.
+
+        ``machine_detection`` is ``"hangup"`` (drop as soon as voicemail answers) or
+        ``"true"`` (stay on and leave the agent's voicemail message). Omitting it is
+        NOT "off" — the agent's own voicemail/Call Screen/IVR Hangup settings arm
+        detection by themselves.
+
+        ``queue=True`` parks the dial instead of placing it now. The synchronous path
+        places ONE call and refuses the overflow with ``429`` once your concurrency cap
+        is full, so firing a list at it means handling a burst of retries yourself.
+        Queued, the number joins a managed per-agent queue that a worker drains at your
+        organization's concurrency, with automatic retries, DNC suppression and
+        de-duplication — fire 200 numbers in parallel and they all land in one queue,
+        deduped, with no ``429`` to handle.
+
+        **Queueing changes the response**: ``202`` and
+        ``{"queued": True, "campaignId", "deduplicated", "pendingAhead"}`` — there is no
+        live session yet, so no ``sessionId``. ``max_attempts`` (1–10, default 3),
+        ``retry_backoff_secs`` (5–3600, default 300, grown exponentially) and
+        ``retry_on_no_answer`` (default True) configure the queue and are ignored
+        otherwise. ``first_response`` and ``variables`` are honored here too — the opener
+        is stored per number and replayed on every attempt, retries included. Two enqueues
+        of a number already live in the queue dedupe to one, and the FIRST opener wins.
+        """
         body: Dict[str, Any] = {"agentId": agent_id, "mobileNumber": to}
         if variables is not None:
             body["variables"] = variables
@@ -100,6 +137,18 @@ class Telenow:
             body["firstResponse"] = first_response
         if machine_detection is not None:
             body["machineDetection"] = machine_detection
+        if from_number is not None:
+            body["fromNumber"] = from_number
+        if from_number_id is not None:
+            body["fromNumberId"] = from_number_id
+        if queue is not None:
+            body["queue"] = queue
+        if max_attempts is not None:
+            body["maxAttempts"] = max_attempts
+        if retry_backoff_secs is not None:
+            body["retryBackoffSecs"] = retry_backoff_secs
+        if retry_on_no_answer is not None:
+            body["retryOnNoAnswer"] = retry_on_no_answer
         if call_type is not None:
             body["callType"] = call_type
         if user_id is not None:
@@ -169,10 +218,76 @@ class Telenow:
             body["firstResponse"] = first_response
         return self._request("POST", "/api/sessions/init-web-call", body)
 
+    def send_context(
+        self,
+        session_id: str,
+        text: str,
+        key: Optional[str] = None,
+        respond: str = "none",
+    ) -> Any:
+        """Tell the agent something mid-call — a payment that went through, an order that
+        shipped, a supervisor's steer — without it counting as something the caller said.
+
+        Works on any live call (phone, SIP, web) by session id. Silent unless
+        ``respond="when_idle"``. A later note with the same ``key`` replaces this one.
+        Returns ``{noteId, key, delivery}``. A refusal raises ``TelenowError`` with
+        ``body["error"]`` the code: 404 — no such call in your org; 409 ``not_live`` (the call
+        has ended or not started), ``no_agent`` (a person has the call for good),
+        ``engine_unsupported``; 413 ``too_large`` (``body["maxChars"]`` — how many characters, as
+        Unicode code points, fit right now); 400 ``invalid_respond`` / ``empty``; 503
+        ``owner_unknown`` / ``owner_unreachable`` (retry after ``Retry-After``); 429 when you
+        are over the API's rate limit.
+        """
+        body: Dict[str, Any] = {"text": text}
+        if key is not None:
+            body["key"] = key
+        if respond != "none":
+            body["respond"] = respond
+        return self._request("POST", f"/api/sessions/{session_id}/context", body)
+
+    def send_activity(self, session_id: str) -> Any:
+        """Tell the agent the caller is still here, just busy (paying, reading, typing).
+
+        Restarts the agent's silence check-in (or, in a wait the caller asked for, that wait's
+        nudges) so it doesn't ask "are you still there?". Returns ``{nextCheckinInMs}`` — how
+        long until the agent would speak up unprompted; ping again before it runs out while they
+        stay busy. ``None`` when nothing is armed right now (a hold, a wait still being
+        acknowledged): try again once the conversation moves on. Refusals as ``send_context``.
+        """
+        return self._request("POST", f"/api/sessions/{session_id}/activity", {})
+
     def transfer_call(self, session_id: str, to: str) -> Any:
         return self._request("POST", f"/api/sessions/{session_id}/transfer", {"to": to})
 
+    def play_audio(
+        self,
+        session_id: str,
+        *,
+        track_id: Optional[str] = None,
+        url: Optional[str] = None,
+    ) -> Any:
+        """Play a recording into a LIVE call — your own audio, not TTS.
+
+        Pass ``track_id`` for a track uploaded to the org audio library
+        (normalised once, no fetch on the call) or ``url`` for a 16-bit PCM WAV
+        fetched per play (for audio your system renders per call). Exactly one.
+
+        Returns as soon as playback is QUEUED, with ``durationMs`` — a
+        five-minute recording would otherwise hold the request open for five
+        minutes. Playing again supersedes whatever is currently playing.
+
+        Works on an agent call and on a manual (softphone) call alike: with
+        ``create_manual_call`` and the ``call.dtmf`` webhook, that is a fully
+        programmable call — dial, play your recording, collect keypresses — with
+        no browser leg and no AI in the loop.
+        """
+        if (track_id is None) == (url is None):
+            raise ValueError("pass exactly one of track_id or url")
+        body: Dict[str, Any] = {"trackId": track_id} if track_id else {"url": url}
+        return self._request("POST", f"/api/sessions/{session_id}/play", body)
+
     def end_call(self, session_id: str) -> Any:
+        """End the session — hangs up the live call."""
         return self._request("DELETE", f"/api/sessions/{session_id}")
 
     # ---- Text chat (Chat API, /api/v1/chat) ----

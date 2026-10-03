@@ -3,7 +3,14 @@ const zapier = require('zapier-platform-core');
 
 const authentication = require('./authentication');
 const { includeApiKey, handleErrors } = require('./lib/api');
-const { callEnded, callStarted, callAnalyzed, recordingReady, toolInvoked } = require('./triggers/call_events');
+const {
+  callEnded,
+  callStarted,
+  callMachineDetected,
+  callAnalyzed,
+  recordingReady,
+  toolInvoked,
+} = require('./triggers/call_events');
 const { agentList, numberList } = require('./triggers/dropdowns');
 const initiateCall = require('./creates/initiate_call');
 const findCalls = require('./searches/find_calls');
@@ -27,6 +34,7 @@ module.exports = {
     [callEnded.key]: callEnded,
     [callAnalyzed.key]: callAnalyzed,
     [callStarted.key]: callStarted,
+    [callMachineDetected.key]: callMachineDetected,
     [recordingReady.key]: recordingReady,
     [toolInvoked.key]: toolInvoked,
     [agentList.key]: agentList,

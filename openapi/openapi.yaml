@@ -56,7 +56,106 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/CallResult' } }
+        '202':
+          description: >
+            Queued (`queue: true` only). No live session yet — the worker dials
+            later, so there is no `sessionId` to poll.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueuedCallResult' }
         '400': { $ref: '#/components/responses/Error' }
+        '429':
+          description: >
+            Concurrency cap full. Only on the synchronous path — `queue: true`
+            returns 202 instead of refusing.
+
+  /api/sessions/{id}/context:
+    post:
+      operationId: addContextNote
+      summary: Tell the agent something mid-call, without it being a caller turn.
+      description: >
+        A live context note, for any live call (phone, SIP, web) by session id. The agent
+        sees it from its next reply; it is never counted as something the caller said and
+        moves nothing in a flow. A later note with the same `key` replaces this one (a note from
+        the caller's own app never replaces yours: its keys are its own). An identical retry of a
+        note the agent already had in view is not told to the caller twice. A call held by
+        another server is forwarded there.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, example: 'Payment of ₹4,500 received. UPI ref 41234.' }
+                key: { type: string, example: payment }
+                respond: { type: string, enum: [none, when_idle], default: none }
+      responses:
+        '202':
+          description: >
+            Taken. `delivery` says when the agent sees it: `next_turn` (from its next reply),
+            `held` (the agent is away — the caller put it on hold, or a transfer is under way that
+            may give the call back — and sees it when it gets the call back), `speaking_now`
+            (`respond: when_idle` into a free line).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      noteId: { type: string, format: uuid }
+                      key: { type: string, nullable: true }
+                      delivery: { type: string, enum: [next_turn, held, speaking_now] }
+        '400':
+          description: '`empty` (no text), `invalid_respond` (neither `none` nor `when_idle`), or a body that is not the JSON above.'
+        '404':
+          description: No such call in your organization (another organization's call answers the same).
+        '409':
+          description: '`not_live` (the call has ended, or has not started), `no_agent` (a person has the call for good — a manual call, a takeover, a transfer that went through) or `engine_unsupported` (a Custom API agent, or a Gemini Live model other than 3.8 Live and 3.1 Flash Live).'
+        '413':
+          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters (Unicode code points) fit right now, beside the notes the call already holds.'
+        '429':
+          description: Over the API's rate limit.
+        '503':
+          description: '`owner_unknown` (the call''s server has not registered it yet) or `owner_unreachable` (it did not answer in time). Retry after `Retry-After` seconds.'
+
+  /api/sessions/{id}/activity:
+    post:
+      operationId: noteUserActivity
+      summary: The caller is still here, just busy — restart the agent's silence check-in.
+      description: >
+        Restarts the agent's silence check-in — or, in a wait the caller asked for ("give me a
+        minute"), that wait's nudges and its close — so the agent does not ask "are you still
+        there?" while the caller is busy (paying, reading, typing). Never makes the agent speak.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: '`nextCheckinInMs`: how long until the agent would speak up unprompted — ping again before it runs out while the caller stays busy — or null when nothing is armed right now (a hold, a wait still being acknowledged, a speech-to-speech agent): try again once the conversation moves on.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      nextCheckinInMs: { type: integer, nullable: true }
+        '404':
+          description: No such call in your organization.
+        '409':
+          description: '`not_live` (ended or not started) or `no_agent`.'
+        '429':
+          description: Over the API's rate limit.
+        '503':
+          description: '`owner_unknown` or `owner_unreachable` — retry after `Retry-After` seconds.'
 
   /api/sessions/{id}/transfer:
     post:
@@ -75,6 +174,67 @@ paths:
       responses:
         '200': { description: Transferred }
         '400': { $ref: '#/components/responses/Error' }
+
+  /api/sessions/{id}/play:
+    post:
+      operationId: playAudio
+      summary: Play an uploaded recording into a live call.
+      description: >
+        Plays your own audio into the call instead of synthesising speech. Pass
+        `trackId` for a track in the org audio library (normalised once at
+        upload, cached — no fetch on the call) or `url` for a 16-bit PCM WAV
+        fetched per play (for audio your system renders per call). Exactly one.
+
+
+        Returns as soon as playback is QUEUED, with the recording's duration — a
+        five-minute track would otherwise hold the request open for five
+        minutes. Playing again supersedes whatever is currently playing. The
+        session must still be active.
+
+
+        Works on an agent call and on a **manual (softphone)** call alike. With
+        `init-web-call { mode: "manual" }` and the `call.dtmf` webhook, that is a
+        fully programmable call — dial, play your recording, collect keypresses —
+        with no browser leg and no AI in the loop.
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                trackId:
+                  type: string
+                  format: uuid
+                  description: An org audio-library track id.
+                url:
+                  type: string
+                  format: uri
+                  description: HTTPS URL to a 16-bit PCM WAV (8 MB cap).
+                  example: 'https://example.com/order-confirm.wav'
+              oneOf:
+                - required: [trackId]
+                - required: [url]
+      responses:
+        '200':
+          description: Playback queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      sessionId: { type: string, format: uuid }
+                      trackId: { type: string, format: uuid, nullable: true }
+                      url: { type: string, nullable: true }
+                      durationMs: { type: integer, example: 8400 }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
 
   /api/sessions/{id}:
     delete:
@@ -403,7 +563,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [call.started, call.ended, transcript.ready, tool.invoked, recording.ready, call.analyzed]
+            enum: [call.started, call.ended, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment]
       responses:
         '200':
           description: OK
@@ -418,6 +578,162 @@ paths:
                     type: array
                     items: { type: object }
 
+  # -- Integration connectors ------------------------------------------------
+  # Connect a vendor account (a store, a CRM, a database, WhatsApp) to this org
+  # so agents can use it mid-call. Secrets are WRITE-ONLY: accepted on create
+  # and update, returned only ever as a fixed mask.
+
+  /api/v1/integrations/providers:
+    get:
+      operationId: listConnectors
+      summary: Connectors you can connect through this API.
+      description: >
+        Each entry carries `connect.credentials` and `connect.settings` - the
+        exact fields to send when creating a connection. Connectors provisioned
+        by a dashboard flow of their own are omitted, because a credentials body
+        cannot set them up.
+      security: [{ ApiKeyAuth: [] }]
+      responses: { '200': { description: '{ providers: [...] }' } }
+
+  /api/v1/integrations/providers/{providerId}:
+    get:
+      operationId: getConnector
+      summary: One connector's connect spec.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: providerId, in: path, required: true, schema: { type: string, example: shopify } }
+      responses:
+        '200': { description: Connector spec }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/integrations/connections:
+    get:
+      operationId: listConnections
+      summary: This org's connections (secrets masked).
+      description: >
+        Filter by `providerId` to find a connection whose id you no longer hold
+        - a reinstalled app, a rebuilt worker - instead of creating a second one.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: providerId, in: query, schema: { type: string, example: shopify } }
+      responses: { '200': { description: '{ connections: [...] }' } }
+    post:
+      operationId: createConnection
+      summary: Connect a vendor account.
+      description: >
+        Verifies the credentials against the vendor before returning, unless
+        `verify` is false. A failed verification still returns 201: the
+        connection exists and holds your credentials, so retrying the create
+        would only make a second broken one. Read `verification.ok`, and the
+        connection's own `status` / `lastError`.
+        A workspace may connect one connector several times, but not twice to the
+        same ACCOUNT - a second Shopify connection for the same store domain is
+        refused with 409, and the message names the connection already holding it
+        so a retry can PATCH that one. Connectors with no account identifier
+        (razorpay, hubspot, ...) and OAuth connectors are unconstrained.
+        Send an `Idempotency-Key` header anyway: the 409 tells you a duplicate
+        happened, it does not make the retry succeed. With the header a retry of
+        the same body replays the original 201 and its connection id.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: Idempotency-Key, in: header, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequest' }
+      responses:
+        '201': { description: '{ connection, verification, next }' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/integrations/connections/{id}:
+    get:
+      operationId: getConnection
+      summary: One connection (secrets masked).
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      responses:
+        '200': { description: '{ connection }' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateConnection
+      summary: Update a connection (rotate a credential, rename, retarget).
+      description: >
+        Partial. An omitted field keeps its stored value, and a credential sent
+        back as the mask keeps the stored secret - so you can read a connection,
+        change one setting and send it back. Re-verifies by default. `providerId`
+        cannot change; delete it and connect the other one instead. Repointing at
+        a different account is allowed, and 409s if another connection already
+        holds that one.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequest' }
+      responses:
+        '200': { description: '{ connection, verification }' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    put:
+      operationId: replaceConnection
+      summary: Alias of PATCH, with the same partial semantics.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConnectionRequest' }
+      responses:
+        '200': { description: '{ connection, verification }' }
+    delete:
+      operationId: deleteConnection
+      summary: Disconnect.
+      description: >
+        Refused with 409 while an agent or a WhatsApp channel still uses it, and
+        the message names them. That guard is not cosmetic - deleting a
+        connection cascades its WhatsApp channel and every message on it.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      responses:
+        '200': { description: '{ deleted: true, id }' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/integrations/connections/{id}/test:
+    post:
+      operationId: testConnection
+      summary: Re-run the connector's verification call.
+      description: >
+        Makes a real request to the vendor with the stored credentials and
+        records the result on the connection. Returns 200 whether or not the
+        credentials work - the answer is in `ok`.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      responses:
+        '200': { description: '{ ok, error?, warnings: [...] }' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/integrations/connections/{id}/authorize:
+    post:
+      operationId: authorizeConnection
+      summary: OAuth connectors - get the consent URL.
+      description: >
+        For `authKind: oauth2` only. Redirect your END USER to `authorizeUrl`;
+        after they consent the vendor returns them to the Telenow dashboard
+        (`returnsTo`), not to your app - there is no return-URL parameter, by
+        design. Poll `pollUrl` until the connection's `status` is `active`.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
+      responses:
+        '200': { description: '{ authorizeUrl, returnsTo, pollUrl }' }
+        '400': { $ref: '#/components/responses/Error' }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -429,6 +745,11 @@ components:
       scheme: bearer
       description: Ephemeral client token (or user JWT).
   parameters:
+    ConnectionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     SessionId:
       name: id
       in: path
@@ -450,6 +771,40 @@ components:
               success: { type: boolean, example: false }
               error: { type: string }
   schemas:
+    ConnectionRequest:
+      type: object
+      description: >
+        `credentials` and `settings` are provider-shaped - read the field lists
+        from GET /api/v1/integrations/providers/{providerId}. Unknown keys are
+        dropped rather than stored.
+      properties:
+        providerId:
+          type: string
+          example: shopify
+          description: Required on create. On update it may only repeat the current provider.
+        label:
+          type: string
+          example: Acme Store
+          description: Display name. Defaults to the connector's own name.
+        credentials:
+          type: object
+          additionalProperties: { type: string }
+          example: { api_token: shpat_xxxxxxxxxxxx }
+          description: >
+            Secret-flagged values are encrypted at rest and never returned. On
+            UPDATE, sending the mask back keeps the stored secret; on CREATE the
+            mask is refused, because there is nothing stored to keep.
+        settings:
+          type: object
+          additionalProperties: true
+          example: { store_domain: acme.myshopify.com }
+          description: Non-secret connect values.
+        verify:
+          type: boolean
+          default: true
+          description: >
+            Check the credentials against the vendor before returning. Skipped
+            for OAuth connectors, which hold no tokens until consent lands.
     Envelope:
       type: object
       properties:
@@ -488,7 +843,18 @@ components:
         events:
           type: array
           items: { type: string }
-          description: 'Valid: call.started, call.ended, transcript.ready, tool.invoked, recording.ready, call.analyzed, or "*"'
+          description: >-
+            19 valid names, or "*" for all. Session-scoped (carry sessionId/agentId):
+            call.started, call.ended, call.machine_detected, call.dtmf,
+            transcript.ready, tool.invoked, recording.ready, call.analyzed.
+            Org-scoped (NO agentId — an agent-scoped hook never receives these):
+            whatsapp.message.received, whatsapp.message.status,
+            whatsapp.account.health, billing.invoice_issued,
+            billing.payment_overdue, billing.account_suspended,
+            billing.number_renewal_due, billing.number_renewed,
+            billing.number_renewal_failed, billing.number_release_pending,
+            billing.number_released_nonpayment.
+            An unknown name is rejected 400 with the full valid list.
         agent_id: { type: string, format: uuid, description: Scope to one agent (omit = org-wide) }
         include_recording: { type: boolean, default: false }
         include_transcript: { type: boolean, default: false }
@@ -561,11 +927,58 @@ components:
         identifier: { type: string }
         firstResponse:
           type: string
-          description: Override the agent's opening line for this call.
+          description: >
+            Override the agent's opening line for this call. Honored on the
+            queued path too — stored per number and replayed on every attempt.
         machineDetection:
           type: string
           enum: ['true', 'hangup']
-          description: Answering-machine detection (Plivo only).
+          description: >
+            Answering-machine detection. `true` stays on and leaves the agent's
+            voicemail message; `hangup` drops the call the moment a machine
+            answers. Omitting it is NOT "off" — the agent's own voicemail
+            message / Call Screen / IVR Hangup settings arm detection by
+            themselves. Plivo, Twilio, Vobiz and Vonage; inert on Exotel and SIP.
+        fromNumber:
+          type: string
+          example: '+15551234567'
+          description: >
+            Caller ID, as the number itself. Matched against your org's own live
+            numbers — never passed to the carrier — so it is not a spoofing
+            vector. Omit to use the agent's default. Send this or `fromNumberId`,
+            not both.
+        fromNumberId:
+          type: string
+          format: uuid
+          description: The same choice by row id, from `GET /api/v1/numbers`.
+        queue:
+          type: boolean
+          description: >
+            Park the dial instead of placing it now. The number is enqueued into
+            a managed per-agent queue that a worker drains at your org's
+            concurrency, so a burst past the cap QUEUES (202) instead of being
+            refused (429). Numbers already live in the queue are deduped.
+            Changes the response shape — see the 202 below.
+        maxAttempts:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+          description: 'Queue mode only. Total dial attempts incl. the first.'
+        retryBackoffSecs:
+          type: integer
+          minimum: 5
+          maximum: 3600
+          default: 300
+          description: >
+            Queue mode only. Base backoff between attempts; grown exponentially
+            by the worker, capped at 1h.
+        retryOnNoAnswer:
+          type: boolean
+          default: true
+          description: >
+            Queue mode only. Redial an unanswered/busy call. Hard failures always
+            retry until `maxAttempts`.
         callType: { type: string }
         userId: { type: string, format: uuid }
     CallResult:
@@ -575,6 +988,26 @@ components:
         callId: { type: string }
         status: { type: string }
         phoneNumber: { type: string }
+    QueuedCallResult:
+      type: object
+      description: >
+        Returned with `202` when `queue: true`. There is no live session yet, so
+        no `sessionId` — the worker dials later.
+      properties:
+        success: { type: boolean }
+        queued: { type: boolean, example: true }
+        campaignId:
+          type: string
+          format: uuid
+          description: The managed queue this number joined.
+        deduplicated:
+          type: boolean
+          description: >
+            True when the number was ALREADY live in the queue, so nothing new
+            was added. A number is held unique while pending/dialing.
+        pendingAhead:
+          type: integer
+          description: Queue depth after this call.
     SessionInfo:
       type: object
       properties:

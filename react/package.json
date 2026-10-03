@@ -1,6 +1,6 @@
 {
   "name": "@telenow/react",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "React hook for Telenow voice AI — useVoiceCall() adds real-time AI voice agent calls to your app: call state, live transcripts, mute, chat messages, barge-in, auto-reconnect.",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,7 +21,7 @@
     "prepublishOnly": "npm run clean && npm run build"
   },
   "peerDependencies": {
-    "@telenow/client": "^0.1.0",
+    "@telenow/client": "^0.1.6",
     "react": ">=18"
   },
   "keywords": [

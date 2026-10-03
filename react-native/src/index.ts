@@ -51,6 +51,65 @@ function utf8Decode(bytes: Uint8Array): string {
 
 export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error';
 
+/**
+ * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
+ * (`next_turn`), once it gets the call back — the caller takes it off hold, or a transfer under way
+ * hands the call back (`held`) — or right away (`speaking_now`, for `respond: 'when_idle'` when the
+ * line is free). The web SDK's
+ * type (`@telenow/client`), declared here so this package needs no newer client than it names.
+ */
+export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
+
+/**
+ * `s` with every lone UTF-16 surrogate — half of an emoji, as `text.slice(0, n)` can leave it —
+ * replaced by U+FFFD: the server's JSON parser refuses one, the frame would get no reply, and every
+ * later reply would settle the wrong promise (the web SDK's rule, `@telenow/client`).
+ */
+function wellFormed(s: string): string {
+  if (!/[\uD800-\uDFFF]/.test(s)) return s;
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += s[i] + s[i + 1];
+        i++;
+      } else {
+        out += '\uFFFD';
+      }
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      out += '\uFFFD';
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+/** {@link TelenowCall.sendContext} options. */
+export interface ContextOptions {
+  /** A later note with the same key replaces this one (current screen, cart, form state…). */
+  key?: string;
+  /** `'when_idle'`: let the agent speak up about it once the line is quiet. Default: silent. */
+  respond?: 'none' | 'when_idle';
+}
+
+/** The server refused a note or an activity ping, or the call could not carry it. */
+export class TelenowContextError extends Error {
+  /**
+   * `reason` is the stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
+   * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK `not_connected`,
+   * `connection_lost`, `call_ended`, `unsupported_transport`. `maxChars`, for `too_large`: how many
+   * of the note's characters (Unicode code points — cut with `Array.from(text).slice(0, n)`) would
+   * fit right now.
+   */
+  constructor(readonly reason: string, readonly maxChars?: number) {
+    super(`telenow: ${reason}${maxChars !== undefined ? ` (maxChars ${maxChars})` : ''}`);
+    this.name = 'TelenowContextError';
+  }
+}
+
 export interface TelenowCallOptions {
   token?: string;
   publicSlug?: string;
@@ -71,11 +130,13 @@ export interface TelenowCallOptions {
   uplinkEncoding?: 'pcm16' | 'mulaw';
   /**
    * Voice-processing toggles, applied to the native capture session.
-   * Defaults: echoCancellation true, noiseSuppression true, autoGainControl false.
-   * Android: AcousticEchoCanceler / NoiseSuppressor / AutomaticGainControl
-   * effects (hardware-dependent — no-ops where the device lacks them).
-   * iOS: echoCancellation/noiseSuppression ride together via the voice-chat
-   * audio session; autoGainControl is managed by the OS.
+   * Defaults: echoCancellation true, noiseSuppression true, autoGainControl true.
+   * AGC defaults ON to match mobile-browser getUserMedia: a far-field / quiet
+   * Android mic otherwise sits below the server barge-in gate and can't
+   * interrupt the agent. Android: AcousticEchoCanceler / NoiseSuppressor /
+   * AutomaticGainControl effects (hardware-dependent — no-ops where the device
+   * lacks them). iOS: echoCancellation/noiseSuppression/AGC all ride together
+   * via the input node's Voice-Processing I/O, so the AGC flag is a no-op there.
    */
   audio?: { echoCancellation?: boolean; noiseSuppression?: boolean; autoGainControl?: boolean };
   /**
@@ -100,10 +161,14 @@ export class TelenowCall {
   private jitter = new AdaptiveJitterBuffer();
   private clock = 0;
   private micSub?: { remove: () => void };
+  private errSub?: { remove: () => void };
   private ended = false;
   private readonly uplinkRate: number;
   /** Wall-clock ms until which queued agent audio is still playing (halfDuplex gate). */
   private playUntil = 0;
+  /** Replies still owed, oldest first: the server answers each frame in order, on one socket. */
+  private pendingContext: { resolve: (d: ContextDelivery) => void; reject: (e: Error) => void }[] = [];
+  private pendingActivity: { resolve: (ms: number | null) => void; reject: (e: Error) => void }[] = [];
   onState?: (s: CallState) => void;
   onTranscript?: (role: string, text: string) => void;
   /** Mic level per 20 ms frame, dBFS (≈ −90…0) — drive a VU meter. */
@@ -139,6 +204,8 @@ export class TelenowCall {
           this.jitter.reset();
           this.onState?.('live');
         } else if (s === 'reconnecting') {
+          // A reply to a frame sent on the dropped socket can no longer arrive.
+          this.failPending('connection_lost');
           this.onState?.('reconnecting');
         } else if (s === 'connecting') {
           this.onState?.('connecting');
@@ -154,7 +221,7 @@ export class TelenowCall {
       this.uplinkRate,
       audio.echoCancellation ?? true,
       audio.noiseSuppression ?? true,
-      audio.autoGainControl ?? false,
+      audio.autoGainControl ?? true,
     );
     this.micSub = emitter.addListener('TelenowMicFrame', (b64: string) => {
       const shorts = leBytesToInt16(base64ToBytes(b64));
@@ -162,6 +229,15 @@ export class TelenowCall {
       if (this.micGated()) return; // halfDuplex: agent is speaking
       const out = this.opts.uplinkEncoding === 'pcm16' ? int16ToLEBytes(shorts) : pcm16ToMulaw(shorts);
       this.socket?.send(JSON.stringify({ event: 'media', data: bytesToBase64(out) }));
+    });
+    // The native module emits TelenowAudioError when the mic fails to initialize
+    // (busy, permission race, unsupported rate). Without a listener the socket
+    // stays open and reports 'live' with a dead mic — surface 'error' and tear
+    // down instead of a silently hanging call.
+    this.errSub = emitter.addListener('TelenowAudioError', (msg: string) => {
+      console.warn(`TelenowCall: capture error — ${msg}`);
+      this.onState?.('error');
+      this.teardown();
     });
   }
 
@@ -230,11 +306,62 @@ export class TelenowCall {
     else this.teardown();
   }
 
+  /**
+   * Tell the agent something it can't hear — what the user is looking at, what is in their
+   * cart — without it counting as something the user said. Silent unless `respond: 'when_idle'`:
+   * the agent uses it from its next reply. The agent must accept notes from the caller's app (its
+   * `liveContext.acceptClientNotes` setting), and it is always told such notes are unverified.
+   * Resolves with when the agent will see it; rejects with a {@link TelenowContextError}.
+   */
+  sendContext(text: string, opts?: ContextOptions): Promise<ContextDelivery> {
+    // WebRTC has no server-bound data channel for this yet.
+    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    const frame = {
+      event: 'contextual_update',
+      text: wellFormed(text),
+      ...(opts?.key !== undefined ? { key: wellFormed(opts.key) } : {}),
+      ...(opts?.respond ? { respond: opts.respond } : {}),
+    };
+    return new Promise((resolve, reject) => {
+      if (!this.socket?.send(JSON.stringify(frame))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.pendingContext.push({ resolve, reject });
+    });
+  }
+
+  /**
+   * "The user is still here, just busy": restarts the agent's silence check-in (or the clock of a
+   * wait the caller asked for) so it doesn't ask "are you still there?". Resolves with how long
+   * until the agent would speak up unprompted (ms), or `null` when nothing is armed. Call it from
+   * your own input handlers, at most about once per the interval it last returned.
+   */
+  sendActivity(): Promise<number | null> {
+    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    return new Promise((resolve, reject) => {
+      if (!this.socket?.send(JSON.stringify({ event: 'user_activity' }))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.pendingActivity.push({ resolve, reject });
+    });
+  }
+
+  /** Rejects every reply still owed: it can no longer arrive. */
+  private failPending(reason: string): void {
+    for (const p of this.pendingContext.splice(0)) p.reject(new TelenowContextError(reason));
+    for (const p of this.pendingActivity.splice(0)) p.reject(new TelenowContextError(reason));
+  }
+
   private teardown(): void {
     if (this.ended) return;
     this.ended = true;
+    this.failPending('call_ended');
     this.micSub?.remove();
     this.micSub = undefined;
+    this.errSub?.remove();
+    this.errSub = undefined;
     this.socket = undefined;
     // WebRTC: disconnect the room + stop the native audio session. The
     // TelenowAudio native module is only used on the WebSocket path.
@@ -306,6 +433,19 @@ export class TelenowCall {
       this.onTranscript?.(String(m.role), String(m.text));
     } else if (m.event === 'session_end') {
       this.stop();
+    } else if (m.event === 'context_ack' || m.event === 'context_rejected') {
+      const p = this.pendingContext.shift();
+      if (m.event === 'context_ack') {
+        const d = m.delivery;
+        p?.resolve(d === 'held' || d === 'speaking_now' ? d : 'next_turn');
+      } else {
+        const max = typeof m.maxChars === 'number' ? m.maxChars : undefined;
+        p?.reject(new TelenowContextError(String(m.reason ?? 'rejected'), max));
+      }
+    } else if (m.event === 'activity_ack' || m.event === 'activity_rejected') {
+      const p = this.pendingActivity.shift();
+      if (m.event === 'activity_ack') p?.resolve(typeof m.nextCheckinInMs === 'number' ? m.nextCheckinInMs : null);
+      else p?.reject(new TelenowContextError(String(m.reason ?? 'rejected')));
     }
   }
 }

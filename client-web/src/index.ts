@@ -1,5 +1,5 @@
 // Telenow Voice SDK — audio engine public surface.
-export { TelenowCall } from './call.js';
+export { TelenowCall, TelenowContextError } from './call.js';
 export type {
   TelenowCallOptions,
   TelenowSession,
@@ -8,6 +8,8 @@ export type {
   TranscriptLine,
   MediaAdapter,
   TurnTaking,
+  ContextDelivery,
+  ContextOptions,
 } from './call.js';
 export * from './pcm.js';
 export * from './jitterBuffer.js';
