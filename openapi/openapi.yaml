@@ -98,7 +98,7 @@ paths:
         '400': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409':
-          description: '`not_live`, `no_agent` (a manual call) or `engine_unsupported` (speech-to-speech, customapi).'
+          description: '`not_live`, `no_agent` (a manual call) or `engine_unsupported` (a Custom API agent, or a Gemini Live model other than 3.8 Live and 3.1 Flash Live).'
         '413':
           description: '`too_large` — the body carries `maxChars`, how many of this note''s characters fit right now.'
         '429':
