@@ -22,6 +22,11 @@ public struct TelenowCallOptions {
     /// publicSlug needed on the device.
     public var sessionId: String?
     public var websocketUrl: String?
+    /// Route the mic through Apple's Voice-Processing I/O unit (AEC + NS + AGC).
+    /// On by default: without it a speakerphone call feeds the agent's own TTS
+    /// back into the tap and the agent transcribes and interrupts itself. Turn it
+    /// off only when you are doing your own echo cancellation upstream.
+    public var voiceProcessing: Bool
     public init(
         token: String? = nil,
         publicSlug: String? = nil,
@@ -29,8 +34,10 @@ public struct TelenowCallOptions {
         variables: [String: String]? = nil,
         uplinkEncoding: String = "mulaw",
         sessionId: String? = nil,
-        websocketUrl: String? = nil
+        websocketUrl: String? = nil,
+        voiceProcessing: Bool = true
     ) {
+        self.voiceProcessing = voiceProcessing
         self.token = token
         self.publicSlug = publicSlug
         self.baseURL = baseURL
@@ -274,13 +281,34 @@ public final class TelenowCall {
 
     private func startAudio() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        // `.voiceChat` configures the session for VoIP, but on AVAudioEngine the
+        // mode ALONE does NOT route the mic through Apple's Voice-Processing I/O —
+        // the tap still receives the raw mic. AEC/NS/AGC only engage when
+        // `setVoiceProcessingEnabled(true)` is called on the input node below.
+        // This SDK set the mode and stopped there, so every speakerphone call
+        // leaked the agent's own TTS into the uplink and the agent transcribed
+        // and interrupted itself. The React Native module already does this
+        // correctly — see sdk/react-native/ios/TelenowAudio.swift.
+        let mode: AVAudioSession.Mode = options.voiceProcessing ? .voiceChat : .default
+        try session.setCategory(.playAndRecord, mode: mode, options: [.defaultToSpeaker, .allowBluetooth])
         try session.setActive(true)
 
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: nil)
 
         let input = engine.inputNode
+        if options.voiceProcessing {
+            if #available(iOS 13.0, *) {
+                do {
+                    try input.setVoiceProcessingEnabled(true)
+                } catch {
+                    NSLog("TelenowSDK: setVoiceProcessingEnabled failed, mic will not be echo-cancelled: \(error.localizedDescription)")
+                }
+            }
+        }
+        // Queried AFTER enabling voice processing: the VPIO unit can change the
+        // input node's format, and a tap installed with the pre-VPIO format either
+        // fails or delivers garbage.
         let inFormat = input.outputFormat(forBus: 0)
         let target = options.uplinkEncoding == "pcm16" ? 16000.0 : 8000.0
         input.installTap(onBus: 0, bufferSize: 1024, format: inFormat) { [weak self] buffer, _ in

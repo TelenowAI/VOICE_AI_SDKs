@@ -47,6 +47,8 @@ expose `call.sessionId` for exactly this):
 
 ```ts
 await tn.calls.transfer(sessionId, '+15557654321'); // warm transfer to a human
+await tn.calls.play(sessionId, { trackId });         // play YOUR recording
+await tn.calls.play(sessionId, { url });             // ...or a WAV you render per call
 await tn.calls.end(sessionId);                      // hang up
 ```
 
