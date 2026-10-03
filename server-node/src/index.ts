@@ -293,15 +293,21 @@ export class Telenow {
      * Tell the agent something mid-call — a payment that went through, an order that shipped, a
      * supervisor's steer — without it counting as something the caller said. Works on any live
      * call (phone, SIP, web) by session id. Silent unless `respond: 'when_idle'`. A refusal
-     * throws `TelenowError`: 409 `no_agent` / `engine_unsupported` / `not_live`, 413
-     * `too_large` (`err.body.maxChars` says how much fits), 429 `rate_limited`.
+     * throws `TelenowError` with `err.body.error` the code: 404 — no such call in your org; 409
+     * `not_live` (the call has ended or not started), `no_agent` (a person has the call for good),
+     * `engine_unsupported`; 413 `too_large` (`err.body.maxChars` — how many characters, as Unicode
+     * code points, fit right now); 400 `invalid_respond` / `empty`; 503 `owner_unknown` /
+     * `owner_unreachable` (retry after `Retry-After`); 429 when you are over the API's rate limit.
      */
     sendContext: (sessionId: string, note: ContextNote): Promise<ContextNoteResult> =>
       this.req<ContextNoteResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/context`, note),
     /**
      * "The caller is still here, just busy" (paying, reading, typing): restarts the agent's
-     * silence check-in so it doesn't ask "are you still there?". Ping again before
-     * `nextCheckinInMs` runs out while they stay busy.
+     * silence check-in (or, in a wait the caller asked for, that wait's nudges) so it doesn't ask
+     * "are you still there?". `nextCheckinInMs`: how long until the agent would speak up
+     * unprompted — ping again before it runs out while they stay busy; `null` when nothing is armed
+     * right now (a hold, a wait still being acknowledged): try again after the conversation moves
+     * on. Refusals as `sendContext` (404, 409 `not_live` / `no_agent`, 503).
      */
     sendActivity: (sessionId: string): Promise<ActivityResult> =>
       this.req<ActivityResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/activity`, {}),

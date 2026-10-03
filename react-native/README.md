@@ -83,8 +83,9 @@ Methods: `start(): Promise<void>`, `stop()`, `setMuted(boolean)`,
 (tell the agent something it can't hear — what is on screen, what is in the
 basket; the agent must have **Notes from the caller's app** on) and
 `sendActivity(): Promise<number | null>` ("still here, just busy"). Both reject
-with `TelenowContextError` (`reason`, and `maxChars` for `too_large`); WebSocket
-calls only.
+with `TelenowContextError` (`reason`, and `maxChars` for `too_large` — Unicode
+code points: trim with `Array.from(text).slice(0, maxChars).join('')`); WebSocket
+calls only. See [Live context notes](https://telenow.ai/docs/live-context-notes).
 
 ### Turn-taking: duplex vs half-duplex
 

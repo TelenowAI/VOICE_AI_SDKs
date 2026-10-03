@@ -35,7 +35,9 @@ try await call.sendContext("Payment confirmed in the app", respond: .whenIdle) /
 let nextCheckinMs = try await call.sendActivity()                              // "still here, just busy"
 ```
 
-Both throw `TelenowContextError` (`reason`; `maxChars` for `too_large`).
+Both throw `TelenowContextError` (`reason`; `maxChars` for `too_large` — Unicode code points:
+`String(text.unicodeScalars.prefix(maxChars))`). Safe to call from any task: each reply pairs with
+its own call. See [Live context notes](https://telenow.ai/docs/live-context-notes).
 
 ## Remaining for production
 - Exercise the `AVAudioEngine` mic-tap + player path on a real iOS device (audio

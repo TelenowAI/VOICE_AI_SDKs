@@ -65,8 +65,10 @@ paths:
       description: >
         A live context note, for any live call (phone, SIP, web) by session id. The agent
         sees it from its next reply; it is never counted as something the caller said and
-        moves nothing in a flow. A later note with the same `key` replaces this one. A call
-        held by another server is forwarded there.
+        moves nothing in a flow. A later note with the same `key` replaces this one (a note from
+        the caller's own app never replaces yours: its keys are its own). An identical retry of a
+        note the agent already had in view is not told to the caller twice. A call held by
+        another server is forwarded there.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       requestBody:
@@ -82,7 +84,11 @@ paths:
                 respond: { type: string, enum: [none, when_idle], default: none }
       responses:
         '202':
-          description: Taken. `delivery` says when the agent sees it.
+          description: >
+            Taken. `delivery` says when the agent sees it: `next_turn` (from its next reply),
+            `held` (the agent is away — the caller put it on hold, or a transfer is under way that
+            may give the call back — and sees it when it gets the call back), `speaking_now`
+            (`respond: when_idle` into a free line).
           content:
             application/json:
               schema:
@@ -95,24 +101,32 @@ paths:
                       noteId: { type: string, format: uuid }
                       key: { type: string, nullable: true }
                       delivery: { type: string, enum: [next_turn, held, speaking_now] }
-        '400': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
+        '400':
+          description: '`empty` (no text), `invalid_respond` (neither `none` nor `when_idle`), or a body that is not the JSON above.'
+        '404':
+          description: No such call in your organization (another organization's call answers the same).
         '409':
-          description: '`not_live`, `no_agent` (a manual call) or `engine_unsupported` (a Custom API agent, or a Gemini Live model other than 3.8 Live and 3.1 Flash Live).'
+          description: '`not_live` (the call has ended, or has not started), `no_agent` (a person has the call for good — a manual call, a takeover, a transfer that went through) or `engine_unsupported` (a Custom API agent, or a Gemini Live model other than 3.8 Live and 3.1 Flash Live).'
         '413':
-          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters fit right now.'
+          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters (Unicode code points) fit right now, beside the notes the call already holds.'
         '429':
-          description: Rate limited.
+          description: Over the API's rate limit.
+        '503':
+          description: '`owner_unknown` (the call''s server has not registered it yet) or `owner_unreachable` (it did not answer in time). Retry after `Retry-After` seconds.'
 
   /api/sessions/{id}/activity:
     post:
       operationId: noteUserActivity
       summary: The caller is still here, just busy — restart the agent's silence check-in.
+      description: >
+        Restarts the agent's silence check-in — or, in a wait the caller asked for ("give me a
+        minute"), that wait's nudges and its close — so the agent does not ask "are you still
+        there?" while the caller is busy (paying, reading, typing). Never makes the agent speak.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       responses:
         '200':
-          description: '`nextCheckinInMs`: how long until the agent would check in, or null when none is armed.'
+          description: '`nextCheckinInMs`: how long until the agent would speak up unprompted — ping again before it runs out while the caller stays busy — or null when nothing is armed right now (a hold, a wait still being acknowledged, a speech-to-speech agent): try again once the conversation moves on.'
           content:
             application/json:
               schema:
@@ -123,10 +137,14 @@ paths:
                     type: object
                     properties:
                       nextCheckinInMs: { type: integer, nullable: true }
-        '400': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
+        '404':
+          description: No such call in your organization.
         '409':
-          description: '`not_live` or `no_agent`.'
+          description: '`not_live` (ended or not started) or `no_agent`.'
+        '429':
+          description: Over the API's rate limit.
+        '503':
+          description: '`owner_unknown` or `owner_unreachable` — retry after `Retry-After` seconds.'
 
   /api/sessions/{id}/transfer:
     post:

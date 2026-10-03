@@ -53,11 +53,39 @@ export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended
 
 /**
  * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
- * (`next_turn`), once a person hands the call back or the caller takes the agent off hold (`held`),
- * or right away (`speaking_now`, for `respond: 'when_idle'` when the line is free). The web SDK's
+ * (`next_turn`), once it gets the call back — the caller takes it off hold, or a transfer under way
+ * hands the call back (`held`) — or right away (`speaking_now`, for `respond: 'when_idle'` when the
+ * line is free). The web SDK's
  * type (`@telenow/client`), declared here so this package needs no newer client than it names.
  */
 export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
+
+/**
+ * `s` with every lone UTF-16 surrogate — half of an emoji, as `text.slice(0, n)` can leave it —
+ * replaced by U+FFFD: the server's JSON parser refuses one, the frame would get no reply, and every
+ * later reply would settle the wrong promise (the web SDK's rule, `@telenow/client`).
+ */
+function wellFormed(s: string): string {
+  if (!/[\uD800-\uDFFF]/.test(s)) return s;
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += s[i] + s[i + 1];
+        i++;
+      } else {
+        out += '\uFFFD';
+      }
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      out += '\uFFFD';
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
 
 /** {@link TelenowCall.sendContext} options. */
 export interface ContextOptions {
@@ -73,7 +101,8 @@ export class TelenowContextError extends Error {
    * `reason` is the stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
    * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK `not_connected`,
    * `connection_lost`, `call_ended`, `unsupported_transport`. `maxChars`, for `too_large`: how many
-   * of the note's characters would fit right now.
+   * of the note's characters (Unicode code points — cut with `Array.from(text).slice(0, n)`) would
+   * fit right now.
    */
   constructor(readonly reason: string, readonly maxChars?: number) {
     super(`telenow: ${reason}${maxChars !== undefined ? ` (maxChars ${maxChars})` : ''}`);
@@ -289,8 +318,8 @@ export class TelenowCall {
     if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
     const frame = {
       event: 'contextual_update',
-      text,
-      ...(opts?.key !== undefined ? { key: opts.key } : {}),
+      text: wellFormed(text),
+      ...(opts?.key !== undefined ? { key: wellFormed(opts.key) } : {}),
       ...(opts?.respond ? { respond: opts.respond } : {}),
     };
     return new Promise((resolve, reject) => {

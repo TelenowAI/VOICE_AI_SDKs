@@ -181,9 +181,13 @@ class Telenow:
 
         Works on any live call (phone, SIP, web) by session id. Silent unless
         ``respond="when_idle"``. A later note with the same ``key`` replaces this one.
-        Returns ``{noteId, key, delivery}``. A refusal raises ``TelenowError``: 409
-        ``no_agent`` / ``engine_unsupported`` / ``not_live``, 413 ``too_large`` (the error's
-        ``body["maxChars"]`` says how much fits), 429 ``rate_limited``.
+        Returns ``{noteId, key, delivery}``. A refusal raises ``TelenowError`` with
+        ``body["error"]`` the code: 404 — no such call in your org; 409 ``not_live`` (the call
+        has ended or not started), ``no_agent`` (a person has the call for good),
+        ``engine_unsupported``; 413 ``too_large`` (``body["maxChars"]`` — how many characters, as
+        Unicode code points, fit right now); 400 ``invalid_respond`` / ``empty``; 503
+        ``owner_unknown`` / ``owner_unreachable`` (retry after ``Retry-After``); 429 when you
+        are over the API's rate limit.
         """
         body: Dict[str, Any] = {"text": text}
         if key is not None:
@@ -195,8 +199,11 @@ class Telenow:
     def send_activity(self, session_id: str) -> Any:
         """Tell the agent the caller is still here, just busy (paying, reading, typing).
 
-        Restarts the agent's silence check-in so it doesn't ask "are you still there?".
-        Returns ``{nextCheckinInMs}`` — ping again before it runs out while they stay busy.
+        Restarts the agent's silence check-in (or, in a wait the caller asked for, that wait's
+        nudges) so it doesn't ask "are you still there?". Returns ``{nextCheckinInMs}`` — how
+        long until the agent would speak up unprompted; ping again before it runs out while they
+        stay busy. ``None`` when nothing is armed right now (a hold, a wait still being
+        acknowledged): try again once the conversation moves on. Refusals as ``send_context``.
         """
         return self._request("POST", f"/api/sessions/{session_id}/activity", {})
 

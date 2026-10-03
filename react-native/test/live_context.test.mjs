@@ -119,3 +119,21 @@ test('a dropped socket fails what it owed; the end of the call fails the rest; n
   await assert.rejects(pending, (e) => e.reason === 'call_ended');
   assert.equal(frames(ws2).length, 1);
 });
+
+// ★ K1: half an emoji is sent as U+FFFD — a lone surrogate would be refused by the server's JSON
+// parser, the frame would get no reply, and every later reply would settle the wrong note.
+test('a note cut inside an emoji is sent well-formed, so every reply still pairs with its note', async () => {
+  const { call, ws } = await liveCall();
+  const cut = 'Cart 🛒🛒'.slice(0, 6);
+  const first = call.sendContext(cut, { key: '🛒'.slice(0, 1) });
+  const second = call.sendContext('whole 🛒 emoji stay as they are');
+  const sent = frames(ws);
+  assert.equal(sent[0].text, 'Cart \uFFFD');
+  assert.equal(sent[0].key, '\uFFFD');
+  assert.equal(sent[1].text, 'whole 🛒 emoji stay as they are');
+  ws.emit({ event: 'context_ack', key: '\uFFFD', noteId: 'n1', delivery: 'next_turn' });
+  ws.emit({ event: 'context_rejected', key: null, reason: 'disabled' });
+  assert.equal(await first, 'next_turn');
+  await assert.rejects(second, (e) => e.reason === 'disabled');
+  call.stop();
+});

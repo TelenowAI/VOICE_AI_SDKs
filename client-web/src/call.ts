@@ -85,8 +85,9 @@ export type TurnTaking = 'duplex' | 'halfDuplex';
 
 /**
  * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
- * (`next_turn`), once a human hands the call back or the caller takes the agent off hold (`held`),
- * or right away (`speaking_now`, for `respond: 'when_idle'` when the line is free).
+ * (`next_turn`), once it gets the call back — the caller takes it off hold, or a transfer under way
+ * hands the call back (`held`) — or right away (`speaking_now`, for `respond: 'when_idle'` when the
+ * line is free).
  */
 export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
 
@@ -98,6 +99,35 @@ export interface ContextOptions {
   respond?: 'none' | 'when_idle';
 }
 
+/**
+ * `s` with every lone UTF-16 surrogate — half of an emoji or another character outside the basic
+ * plane, as `text.slice(0, n)` can leave it — replaced by U+FFFD. `JSON.stringify` writes a lone
+ * surrogate as an escape the server's JSON parser refuses, so the frame would get no reply at all,
+ * and every later reply would settle the wrong promise. A string without surrogates is returned as
+ * is. (A note's `maxChars` counts Unicode code points: cut with `Array.from(text).slice(0, n)`.)
+ */
+export function wellFormed(s: string): string {
+  if (!/[\uD800-\uDFFF]/.test(s)) return s;
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += s[i] + s[i + 1];
+        i++;
+      } else {
+        out += '\uFFFD';
+      }
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      out += '\uFFFD';
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
 /** The server refused a note or an activity ping, or the call could not carry it. */
 export class TelenowContextError extends Error {
   constructor(
@@ -107,7 +137,7 @@ export class TelenowContextError extends Error {
      * `not_connected`, `connection_lost`, `call_ended`, `unsupported_transport`.
      */
     readonly reason: string,
-    /** For `too_large`: how many of the note's characters would fit right now. */
+    /** For `too_large`: how many of the note's characters (Unicode code points) would fit right now. */
     readonly maxChars?: number,
   ) {
     super(`telenow: ${reason}${maxChars !== undefined ? ` (maxChars ${maxChars})` : ''}`);
@@ -143,7 +173,10 @@ export interface TelenowCallOptions {
   /**
    * Send `user_activity` on the user's behalf while they are busy on the page (typing,
    * clicking), so the agent doesn't ask "are you still there?" mid-form. Off by default. Paced by
-   * the agent's own check-in delay, which every acknowledgement carries.
+   * the agent's own check-in delay, which every acknowledgement carries: at most one ping per
+   * window, sent just before the window runs out when the user was busy in it. An idle user gets
+   * none. When nothing is armed (a hold, a person on the call), it pings again only after the
+   * conversation moves on.
    */
   autoActivity?: boolean;
   onState?: (state: CallState) => void;
@@ -236,10 +269,13 @@ export class TelenowCall {
   /** Replies still owed to `sendContext` / `sendActivity`, in send order — the socket is ordered. */
   private pendingContext: Array<{ resolve: (d: ContextDelivery) => void; reject: (e: Error) => void }> = [];
   private pendingActivity: Array<{ resolve: (next: number | null) => void; reject: (e: Error) => void; sentAt: number }> = [];
-  /** The agent's check-in delay from the last `activity_ack`: unknown yet, or `null` when none is armed. */
+  /** The agent's check-in delay from the last `activity_ack`: unknown yet, or `null` when nothing
+   *  was armed — then `autoActivity` waits until the conversation moves on (a transcript event). */
   private checkinAfterMs: number | null | undefined = undefined;
   private lastActivityAt = 0;
   private activityRttMs = 0;
+  /** `autoActivity`'s one ping armed for the end of the current window. */
+  private activityTimer: ReturnType<typeof setTimeout> | null = null;
   private detachActivity: (() => void) | null = null;
 
   constructor(private readonly opts: TelenowCallOptions = {}) {
@@ -283,6 +319,7 @@ export class TelenowCall {
         onState: (s) => {
           if (s === 'open') {
             this.media.clear(); // resync the jitter buffer after a (re)connect
+            this.resetActivity(); // a new call or a new socket: the window and its round trip are learned again
             this.setState('live');
           } else if (s === 'reconnecting') {
             this.setState('reconnecting');
@@ -350,8 +387,8 @@ export class TelenowCall {
     if (this.room) return Promise.reject(new TelenowContextError('unsupported_transport'));
     const frame = {
       event: 'contextual_update',
-      text,
-      ...(opts?.key !== undefined ? { key: opts.key } : {}),
+      text: wellFormed(text),
+      ...(opts?.key !== undefined ? { key: wellFormed(opts.key) } : {}),
       ...(opts?.respond ? { respond: opts.respond } : {}),
     };
     return new Promise((resolve, reject) => {
@@ -393,16 +430,51 @@ export class TelenowCall {
   }
 
   /**
-   * Pings when the last ping is about to stop covering the agent's check-in window: the window
-   * the server last reported, less the round trip that acknowledgement took.
+   * The user did something. With the window unknown, ping now. Otherwise the last ping covers the
+   * agent's check-in window — the window the server last reported, less the round trip that
+   * acknowledgement took — and one ping is armed for the moment it stops covering it, so a user busy
+   * anywhere in the window keeps the agent from checking in; a ping is sent at once once it has
+   * passed. Nothing is armed (`null`): wait for the conversation to move on.
    */
   private onUserInteraction(): void {
     if (this._state !== 'live' || this.checkinAfterMs === null) return;
     const every = this.checkinAfterMs;
-    if (every !== undefined && Date.now() - this.lastActivityAt < every - this.activityRttMs) return;
+    if (every === undefined) {
+      this.pingNow();
+      return;
+    }
+    const due = this.lastActivityAt + every - this.activityRttMs;
+    const wait = due - Date.now();
+    if (wait <= 0) {
+      this.pingNow();
+      return;
+    }
+    if (this.activityTimer === null) {
+      this.activityTimer = setTimeout(() => {
+        this.activityTimer = null;
+        if (this._state === 'live' && this.checkinAfterMs !== null) this.pingNow();
+      }, wait);
+    }
+  }
+
+  private pingNow(): void {
+    this.clearActivityTimer();
     this.sendActivity().catch(() => {
       /* the next interaction tries again */
     });
+  }
+
+  private clearActivityTimer(): void {
+    if (this.activityTimer !== null) clearTimeout(this.activityTimer);
+    this.activityTimer = null;
+  }
+
+  /** A new call or a new socket: the window, the last ping and its round trip are learned again. */
+  private resetActivity(): void {
+    this.clearActivityTimer();
+    this.checkinAfterMs = undefined;
+    this.lastActivityAt = 0;
+    this.activityRttMs = 0;
   }
 
   /** Rejects every reply still owed: it can no longer arrive. */
@@ -504,6 +576,7 @@ export class TelenowCall {
     this.failPending('call_ended');
     this.detachActivity?.();
     this.detachActivity = null;
+    this.clearActivityTimer();
     const sock = this.socket;
     this.socket = null;
     try {
@@ -552,6 +625,9 @@ export class TelenowCall {
       // Echo for server-measured web⇄server RTT (powers the latency breakdown).
       this.socket?.send(JSON.stringify({ event: 'pong', t: m.t }));
     } else if (ev === 'transcript') {
+      // The conversation moved on: a hold or an acknowledgement may be over, so `autoActivity`
+      // probes again on the next interaction.
+      if (this.checkinAfterMs === null) this.checkinAfterMs = undefined;
       this.opts.onTranscript?.({
         role: String(m.role ?? ''),
         text: String(m.text ?? ''),
@@ -573,9 +649,14 @@ export class TelenowCall {
       if (ev === 'activity_ack') {
         const next = typeof m.nextCheckinInMs === 'number' ? m.nextCheckinInMs : null;
         this.checkinAfterMs = next;
+        if (next === null) this.clearActivityTimer();
         if (p) this.activityRttMs = Math.max(0, Date.now() - p.sentAt);
         p?.resolve(next);
       } else {
+        // Refused (no agent on the call, not live): nothing to keep alive until the conversation
+        // moves on — never a ping per keystroke.
+        this.checkinAfterMs = null;
+        this.clearActivityTimer();
         p?.reject(new TelenowContextError(String(m.reason ?? 'rejected')));
       }
     }

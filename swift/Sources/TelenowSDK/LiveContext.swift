@@ -9,9 +9,9 @@
 
 import Foundation
 
-/// When the agent will see a note: from its next reply (`nextTurn`), once a person hands the call
-/// back or the caller takes the agent off hold (`held`), or right away (`speakingNow`, for
-/// `respond: .whenIdle` when the line is free).
+/// When the agent will see a note: from its next reply (`nextTurn`), once it gets the call back —
+/// the caller takes it off hold, or a transfer under way hands the call back (`held`) — or right
+/// away (`speakingNow`, for `respond: .whenIdle` when the line is free).
 public enum ContextDelivery: String {
     case nextTurn = "next_turn"
     case held
@@ -30,7 +30,7 @@ public enum ContextRespond: String {
 /// `reason` is the stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
 /// `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK `not_connected`,
 /// `connection_lost`, `call_ended`. `maxChars`, for `too_large`: how many of the note's characters
-/// would fit right now.
+/// (Unicode code points — `String.unicodeScalars`, not `Character`s) would fit right now.
 public struct TelenowContextError: Error, Equatable, CustomStringConvertible {
     public let reason: String
     public let maxChars: Int?
@@ -46,35 +46,55 @@ public struct TelenowContextError: Error, Equatable, CustomStringConvertible {
 }
 
 /// The replies still owed, oldest first — the server answers every frame in order on one socket —
-/// and whether a frame may be sent at all (only on a socket that has answered since it opened).
-/// Locked: replies arrive on URLSession's queue while apps call from anywhere.
+/// and whether a frame may be sent at all (only on a socket that has answered since it opened, and
+/// never once the call stopped). Locked: replies arrive on URLSession's queue while apps call from
+/// anywhere — so a frame is SENT inside the same critical section that queues its reply, and the
+/// wire's order is always the queue's.
 final class ContextReplies {
     private let lock = NSLock()
     private var ready = false
+    private var stopped = false
     private var notes: [(Result<ContextDelivery, TelenowContextError>) -> Void] = []
     private var pings: [(Result<Int?, TelenowContextError>) -> Void] = []
 
-    /// The socket answered (`true`), or dropped or the call ended (`false`).
+    /// The socket answered (`true`), or dropped (`false`). A stopped call never turns ready: a
+    /// socket's first message racing `stop()` cannot reopen it.
     func setReady(_ on: Bool) {
         lock.lock()
-        ready = on
+        ready = on && !stopped
         lock.unlock()
     }
 
-    /// Queue `done` for the next note reply — `false` (nothing queued) when no frame may be sent.
-    func awaitNote(_ done: @escaping (Result<ContextDelivery, TelenowContextError>) -> Void) -> Bool {
+    /// The call stopped: nothing may be sent until it starts again (`restart`).
+    func stop() {
+        lock.lock()
+        stopped = true
+        ready = false
+        lock.unlock()
+    }
+
+    /// The call is starting again: frames may go once its socket answers.
+    func restart() {
+        lock.lock()
+        stopped = false
+        lock.unlock()
+    }
+
+    /// Sends a note frame with `send` and queues `done` for its reply, in one critical section —
+    /// `false` (nothing queued) when no frame may be sent, or `send` sent nothing (no socket).
+    func awaitNote(_ done: @escaping (Result<ContextDelivery, TelenowContextError>) -> Void, send: () -> Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard ready else { return false }
+        guard ready, send() else { return false }
         notes.append(done)
         return true
     }
 
-    /// Queue `done` for the next activity reply — `false` when no frame may be sent.
-    func awaitPing(_ done: @escaping (Result<Int?, TelenowContextError>) -> Void) -> Bool {
+    /// Sends an activity frame with `send` and queues `done` for its reply, as `awaitNote`.
+    func awaitPing(_ done: @escaping (Result<Int?, TelenowContextError>) -> Void, send: () -> Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard ready else { return false }
+        guard ready, send() else { return false }
         pings.append(done)
         return true
     }

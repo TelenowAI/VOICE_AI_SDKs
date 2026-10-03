@@ -88,6 +88,7 @@ public final class TelenowCall {
 
     public func start() async throws {
         stopped = false
+        replies.restart()
         recon.reset()
         onState?(.connecting)
         let info = try await initSession()
@@ -99,7 +100,7 @@ public final class TelenowCall {
     }
 
     public func stop() {
-        replies.setReady(false)
+        replies.stop()
         replies.failAll("call_ended")
         stopped = true
         ws?.cancel(with: .normalClosure, reason: nil)
@@ -121,12 +122,13 @@ public final class TelenowCall {
     /// Returns when the agent will see it; throws a `TelenowContextError`.
     @discardableResult
     public func sendContext(_ text: String, key: String? = nil, respond: ContextRespond? = nil) async throws -> ContextDelivery {
-        try await withCheckedThrowingContinuation { cont in
-            guard replies.awaitNote({ cont.resume(with: $0.mapError { $0 as Error }) }) else {
+        let frame = ContextReplies.noteFrame(text: text, key: key, respond: respond)
+        return try await withCheckedThrowingContinuation { cont in
+            // Sent inside the queue's lock: the wire's order is the replies' order.
+            guard replies.awaitNote({ cont.resume(with: $0.mapError { $0 as Error }) }, send: { sendJSON(frame) }) else {
                 cont.resume(throwing: TelenowContextError(reason: "not_connected"))
                 return
             }
-            sendJSON(ContextReplies.noteFrame(text: text, key: key, respond: respond))
         }
     }
 
@@ -138,11 +140,10 @@ public final class TelenowCall {
     @discardableResult
     public func sendActivity() async throws -> Int? {
         try await withCheckedThrowingContinuation { cont in
-            guard replies.awaitPing({ cont.resume(with: $0.mapError { $0 as Error }) }) else {
+            guard replies.awaitPing({ cont.resume(with: $0.mapError { $0 as Error }) }, send: { sendJSON(ContextReplies.activityFrame) }) else {
                 cont.resume(throwing: TelenowContextError(reason: "not_connected"))
                 return
             }
-            sendJSON(ContextReplies.activityFrame)
         }
     }
 
@@ -225,10 +226,13 @@ public final class TelenowCall {
         }
     }
 
-    private func sendJSON(_ obj: [String: Any]) {
+    /// Sends `obj` on the socket; `false` when there is none (or it does not serialise).
+    @discardableResult
+    private func sendJSON(_ obj: [String: Any]) -> Bool {
         guard let d = try? JSONSerialization.data(withJSONObject: obj),
-              let s = String(data: d, encoding: .utf8) else { return }
-        ws?.send(.string(s)) { _ in }
+              let s = String(data: d, encoding: .utf8), let ws else { return false }
+        ws.send(.string(s)) { _ in }
+        return true
     }
 
     private func handle(_ m: [String: Any]) {
