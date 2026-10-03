@@ -51,6 +51,36 @@ function utf8Decode(bytes: Uint8Array): string {
 
 export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error';
 
+/**
+ * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
+ * (`next_turn`), once a person hands the call back or the caller takes the agent off hold (`held`),
+ * or right away (`speaking_now`, for `respond: 'when_idle'` when the line is free). The web SDK's
+ * type (`@telenow/client`), declared here so this package needs no newer client than it names.
+ */
+export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
+
+/** {@link TelenowCall.sendContext} options. */
+export interface ContextOptions {
+  /** A later note with the same key replaces this one (current screen, cart, form state…). */
+  key?: string;
+  /** `'when_idle'`: let the agent speak up about it once the line is quiet. Default: silent. */
+  respond?: 'none' | 'when_idle';
+}
+
+/** The server refused a note or an activity ping, or the call could not carry it. */
+export class TelenowContextError extends Error {
+  /**
+   * `reason` is the stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
+   * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK `not_connected`,
+   * `connection_lost`, `call_ended`, `unsupported_transport`. `maxChars`, for `too_large`: how many
+   * of the note's characters would fit right now.
+   */
+  constructor(readonly reason: string, readonly maxChars?: number) {
+    super(`telenow: ${reason}${maxChars !== undefined ? ` (maxChars ${maxChars})` : ''}`);
+    this.name = 'TelenowContextError';
+  }
+}
+
 export interface TelenowCallOptions {
   token?: string;
   publicSlug?: string;
@@ -107,6 +137,9 @@ export class TelenowCall {
   private readonly uplinkRate: number;
   /** Wall-clock ms until which queued agent audio is still playing (halfDuplex gate). */
   private playUntil = 0;
+  /** Replies still owed, oldest first: the server answers each frame in order, on one socket. */
+  private pendingContext: { resolve: (d: ContextDelivery) => void; reject: (e: Error) => void }[] = [];
+  private pendingActivity: { resolve: (ms: number | null) => void; reject: (e: Error) => void }[] = [];
   onState?: (s: CallState) => void;
   onTranscript?: (role: string, text: string) => void;
   /** Mic level per 20 ms frame, dBFS (≈ −90…0) — drive a VU meter. */
@@ -142,6 +175,8 @@ export class TelenowCall {
           this.jitter.reset();
           this.onState?.('live');
         } else if (s === 'reconnecting') {
+          // A reply to a frame sent on the dropped socket can no longer arrive.
+          this.failPending('connection_lost');
           this.onState?.('reconnecting');
         } else if (s === 'connecting') {
           this.onState?.('connecting');
@@ -242,9 +277,58 @@ export class TelenowCall {
     else this.teardown();
   }
 
+  /**
+   * Tell the agent something it can't hear — what the user is looking at, what is in their
+   * cart — without it counting as something the user said. Silent unless `respond: 'when_idle'`:
+   * the agent uses it from its next reply. The agent must accept notes from the caller's app (its
+   * `liveContext.acceptClientNotes` setting), and it is always told such notes are unverified.
+   * Resolves with when the agent will see it; rejects with a {@link TelenowContextError}.
+   */
+  sendContext(text: string, opts?: ContextOptions): Promise<ContextDelivery> {
+    // WebRTC has no server-bound data channel for this yet.
+    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    const frame = {
+      event: 'contextual_update',
+      text,
+      ...(opts?.key !== undefined ? { key: opts.key } : {}),
+      ...(opts?.respond ? { respond: opts.respond } : {}),
+    };
+    return new Promise((resolve, reject) => {
+      if (!this.socket?.send(JSON.stringify(frame))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.pendingContext.push({ resolve, reject });
+    });
+  }
+
+  /**
+   * "The user is still here, just busy": restarts the agent's silence check-in (or the clock of a
+   * wait the caller asked for) so it doesn't ask "are you still there?". Resolves with how long
+   * until the agent would speak up unprompted (ms), or `null` when nothing is armed. Call it from
+   * your own input handlers, at most about once per the interval it last returned.
+   */
+  sendActivity(): Promise<number | null> {
+    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    return new Promise((resolve, reject) => {
+      if (!this.socket?.send(JSON.stringify({ event: 'user_activity' }))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.pendingActivity.push({ resolve, reject });
+    });
+  }
+
+  /** Rejects every reply still owed: it can no longer arrive. */
+  private failPending(reason: string): void {
+    for (const p of this.pendingContext.splice(0)) p.reject(new TelenowContextError(reason));
+    for (const p of this.pendingActivity.splice(0)) p.reject(new TelenowContextError(reason));
+  }
+
   private teardown(): void {
     if (this.ended) return;
     this.ended = true;
+    this.failPending('call_ended');
     this.micSub?.remove();
     this.micSub = undefined;
     this.errSub?.remove();
@@ -320,6 +404,19 @@ export class TelenowCall {
       this.onTranscript?.(String(m.role), String(m.text));
     } else if (m.event === 'session_end') {
       this.stop();
+    } else if (m.event === 'context_ack' || m.event === 'context_rejected') {
+      const p = this.pendingContext.shift();
+      if (m.event === 'context_ack') {
+        const d = m.delivery;
+        p?.resolve(d === 'held' || d === 'speaking_now' ? d : 'next_turn');
+      } else {
+        const max = typeof m.maxChars === 'number' ? m.maxChars : undefined;
+        p?.reject(new TelenowContextError(String(m.reason ?? 'rejected'), max));
+      }
+    } else if (m.event === 'activity_ack' || m.event === 'activity_rejected') {
+      const p = this.pendingActivity.shift();
+      if (m.event === 'activity_ack') p?.resolve(typeof m.nextCheckinInMs === 'number' ? m.nextCheckinInMs : null);
+      else p?.reject(new TelenowContextError(String(m.reason ?? 'rejected')));
     }
   }
 }

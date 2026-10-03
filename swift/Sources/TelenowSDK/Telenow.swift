@@ -76,6 +76,8 @@ public final class TelenowCall {
     private var liveAnnounced = false
     private let jitter = AdaptiveJitterBuffer()
     private var clock = 0.0
+    /// Live context notes: the replies `sendContext` / `sendActivity` still owe (`LiveContext.swift`).
+    private let replies = ContextReplies()
 
     #if os(iOS)
     private let engine = AVAudioEngine()
@@ -97,6 +99,8 @@ public final class TelenowCall {
     }
 
     public func stop() {
+        replies.setReady(false)
+        replies.failAll("call_ended")
         stopped = true
         ws?.cancel(with: .normalClosure, reason: nil)
         ws = nil
@@ -108,6 +112,38 @@ public final class TelenowCall {
 
     public func send(text: String) {
         sendJSON(["event": "text", "text": text, "chat": true])
+    }
+
+    /// Tell the agent something it can't hear — what the user is looking at, what is in their
+    /// cart — without it counting as something the user said. Silent unless `respond: .whenIdle`:
+    /// the agent uses it from its next reply. The agent must accept notes from the caller's app (its
+    /// `liveContext.acceptClientNotes` setting), and it is always told such notes are unverified.
+    /// Returns when the agent will see it; throws a `TelenowContextError`.
+    @discardableResult
+    public func sendContext(_ text: String, key: String? = nil, respond: ContextRespond? = nil) async throws -> ContextDelivery {
+        try await withCheckedThrowingContinuation { cont in
+            guard replies.awaitNote({ cont.resume(with: $0.mapError { $0 as Error }) }) else {
+                cont.resume(throwing: TelenowContextError(reason: "not_connected"))
+                return
+            }
+            sendJSON(ContextReplies.noteFrame(text: text, key: key, respond: respond))
+        }
+    }
+
+    /// "The user is still here, just busy": restarts the agent's silence check-in (or the clock of a
+    /// wait the caller asked for), so it doesn't ask "are you still there?". Returns how long until
+    /// the agent would speak up unprompted (ms), or nil when nothing is armed; throws a
+    /// `TelenowContextError`. Call it from your own input handlers, at most about once per the
+    /// interval it last returned.
+    @discardableResult
+    public func sendActivity() async throws -> Int? {
+        try await withCheckedThrowingContinuation { cont in
+            guard replies.awaitPing({ cont.resume(with: $0.mapError { $0 as Error }) }) else {
+                cont.resume(throwing: TelenowContextError(reason: "not_connected"))
+                return
+            }
+            sendJSON(ContextReplies.activityFrame)
+        }
     }
 
     // MARK: - Session init
@@ -157,6 +193,8 @@ public final class TelenowCall {
                 if !self.liveAnnounced {
                     self.liveAnnounced = true
                     self.recon.reset()
+                    // The socket answered: live-context frames may go (always after `start`).
+                    self.replies.setReady(true)
                     self.onState?(.live)
                 }
                 if case .string(let text) = msg,
@@ -173,6 +211,9 @@ public final class TelenowCall {
 
     private func handleDrop() {
         if stopped { return }
+        // A reply to a frame sent on the dropped socket can no longer arrive.
+        replies.setReady(false)
+        replies.failAll("connection_lost")
         guard let info = session, let delayMs = recon.next(rand: Double.random(in: 0...1)) else {
             onState?(.ended)
             return
@@ -191,6 +232,7 @@ public final class TelenowCall {
     }
 
     private func handle(_ m: [String: Any]) {
+        if replies.handle(m) { return } // context_ack / context_rejected / activity_ack / activity_rejected
         switch m["event"] as? String {
         case "media":
             guard let b64 = m["data"] as? String, let bytes = Data(base64Encoded: b64) else { return }

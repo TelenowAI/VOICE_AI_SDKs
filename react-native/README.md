@@ -78,7 +78,13 @@ call.stop();
 Callbacks: `onState(state)`, `onTranscript(role, text)`,
 `onLevel(dbfs)` (mic level per 20 ms frame, ≈ −90…0 — drive a VU meter or a
 "we can't hear you" hint when it stays ≤ −70 while the user speaks).
-Methods: `start(): Promise<void>`, `stop()`, `setMuted(boolean)`.
+Methods: `start(): Promise<void>`, `stop()`, `setMuted(boolean)`,
+`sendContext(text, { key?, respond? }): Promise<'next_turn' | 'held' | 'speaking_now'>`
+(tell the agent something it can't hear — what is on screen, what is in the
+basket; the agent must have **Notes from the caller's app** on) and
+`sendActivity(): Promise<number | null>` ("still here, just busy"). Both reject
+with `TelenowContextError` (`reason`, and `maxChars` for `too_large`); WebSocket
+calls only.
 
 ### Turn-taking: duplex vs half-duplex
 
