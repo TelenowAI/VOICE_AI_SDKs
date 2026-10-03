@@ -58,6 +58,76 @@ paths:
                   - properties: { data: { $ref: '#/components/schemas/CallResult' } }
         '400': { $ref: '#/components/responses/Error' }
 
+  /api/sessions/{id}/context:
+    post:
+      operationId: addContextNote
+      summary: Tell the agent something mid-call, without it being a caller turn.
+      description: >
+        A live context note, for any live call (phone, SIP, web) by session id. The agent
+        sees it from its next reply; it is never counted as something the caller said and
+        moves nothing in a flow. A later note with the same `key` replaces this one. A call
+        held by another server is forwarded there.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, example: 'Payment of ₹4,500 received. UPI ref 41234.' }
+                key: { type: string, example: payment }
+                respond: { type: string, enum: [none, when_idle], default: none }
+      responses:
+        '202':
+          description: Taken. `delivery` says when the agent sees it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      noteId: { type: string, format: uuid }
+                      key: { type: string, nullable: true }
+                      delivery: { type: string, enum: [next_turn, held, speaking_now] }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409':
+          description: '`not_live`, `no_agent` (a manual call) or `engine_unsupported` (speech-to-speech, customapi).'
+        '413':
+          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters fit right now.'
+        '429':
+          description: Rate limited.
+
+  /api/sessions/{id}/activity:
+    post:
+      operationId: noteUserActivity
+      summary: The caller is still here, just busy — restart the agent's silence check-in.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      responses:
+        '200':
+          description: '`nextCheckinInMs`: how long until the agent would check in, or null when none is armed.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    properties:
+                      nextCheckinInMs: { type: integer, nullable: true }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409':
+          description: '`not_live` or `no_agent`.'
+
   /api/sessions/{id}/transfer:
     post:
       operationId: transferCall

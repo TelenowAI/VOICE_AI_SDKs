@@ -169,6 +169,37 @@ class Telenow:
             body["firstResponse"] = first_response
         return self._request("POST", "/api/sessions/init-web-call", body)
 
+    def send_context(
+        self,
+        session_id: str,
+        text: str,
+        key: Optional[str] = None,
+        respond: str = "none",
+    ) -> Any:
+        """Tell the agent something mid-call — a payment that went through, an order that
+        shipped, a supervisor's steer — without it counting as something the caller said.
+
+        Works on any live call (phone, SIP, web) by session id. Silent unless
+        ``respond="when_idle"``. A later note with the same ``key`` replaces this one.
+        Returns ``{noteId, key, delivery}``. A refusal raises ``TelenowError``: 409
+        ``no_agent`` / ``engine_unsupported`` / ``not_live``, 413 ``too_large`` (the error's
+        ``body["maxChars"]`` says how much fits), 429 ``rate_limited``.
+        """
+        body: Dict[str, Any] = {"text": text}
+        if key is not None:
+            body["key"] = key
+        if respond != "none":
+            body["respond"] = respond
+        return self._request("POST", f"/api/sessions/{session_id}/context", body)
+
+    def send_activity(self, session_id: str) -> Any:
+        """Tell the agent the caller is still here, just busy (paying, reading, typing).
+
+        Restarts the agent's silence check-in so it doesn't ask "are you still there?".
+        Returns ``{nextCheckinInMs}`` — ping again before it runs out while they stay busy.
+        """
+        return self._request("POST", f"/api/sessions/{session_id}/activity", {})
+
     def transfer_call(self, session_id: str, to: str) -> Any:
         return self._request("POST", f"/api/sessions/{session_id}/transfer", {"to": to})
 

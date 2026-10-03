@@ -83,6 +83,38 @@ export interface MediaAdapter {
  */
 export type TurnTaking = 'duplex' | 'halfDuplex';
 
+/**
+ * When the agent will see a note sent with {@link TelenowCall.sendContext}: from its next reply
+ * (`next_turn`), once a human hands the call back (`held`), or right away (`speaking_now`, for
+ * `respond: 'when_idle'` — not sent by the server yet).
+ */
+export type ContextDelivery = 'next_turn' | 'held' | 'speaking_now';
+
+/** {@link TelenowCall.sendContext} options. */
+export interface ContextOptions {
+  /** A later note with the same key replaces this one (current page, cart, form state…). */
+  key?: string;
+  /** `'when_idle'`: let the agent speak up about it once the line is quiet. Default: silent. */
+  respond?: 'none' | 'when_idle';
+}
+
+/** The server refused a note or an activity ping, or the call could not carry it. */
+export class TelenowContextError extends Error {
+  constructor(
+    /**
+     * The stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
+     * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK
+     * `not_connected`, `connection_lost`, `call_ended`, `unsupported_transport`.
+     */
+    readonly reason: string,
+    /** For `too_large`: how many of the note's characters would fit right now. */
+    readonly maxChars?: number,
+  ) {
+    super(`telenow: ${reason}${maxChars !== undefined ? ` (maxChars ${maxChars})` : ''}`);
+    this.name = 'TelenowContextError';
+  }
+}
+
 export interface TelenowCallOptions {
   /** Ephemeral client token — sent as `Authorization: Bearer` to init-web-call. */
   token?: string;
@@ -108,6 +140,12 @@ export interface TelenowCallOptions {
   /** Extra mic-gate time after agent audio drains in halfDuplex mode (ms, default 250). */
   halfDuplexTailMs?: number;
   reconnect?: ReconnectPolicy;
+  /**
+   * Send `user_activity` on the user's behalf while they are busy on the page (typing,
+   * clicking), so the agent doesn't ask "are you still there?" mid-form. Off by default. Paced by
+   * the agent's own check-in delay, which every acknowledgement carries.
+   */
+  autoActivity?: boolean;
   onState?: (state: CallState) => void;
   onTranscript?: (line: TranscriptLine) => void;
   /** Mic input level, dBFS per frame — drive a VU meter. */
@@ -195,6 +233,14 @@ export class TelenowCall {
   private _muted = false;
   private _sessionId: string | undefined;
   private ended = false;
+  /** Replies still owed to `sendContext` / `sendActivity`, in send order — the socket is ordered. */
+  private pendingContext: Array<{ resolve: (d: ContextDelivery) => void; reject: (e: Error) => void }> = [];
+  private pendingActivity: Array<{ resolve: (next: number | null) => void; reject: (e: Error) => void; sentAt: number }> = [];
+  /** The agent's check-in delay from the last `activity_ack`: unknown yet, or `null` when none is armed. */
+  private checkinAfterMs: number | null | undefined = undefined;
+  private lastActivityAt = 0;
+  private activityRttMs = 0;
+  private detachActivity: (() => void) | null = null;
 
   constructor(private readonly opts: TelenowCallOptions = {}) {
     this.media = opts.mediaAdapter ?? new BrowserMedia(opts.audio ?? {});
@@ -240,6 +286,8 @@ export class TelenowCall {
             this.setState('live');
           } else if (s === 'reconnecting') {
             this.setState('reconnecting');
+            // Replies to notes/pings sent on the dropped socket may never come.
+            this.failPending('connection_lost');
           } else if (s === 'connecting') {
             this.setState('connecting');
           } else if (s === 'closed') {
@@ -249,6 +297,7 @@ export class TelenowCall {
       });
       this.socket = socket;
       socket.open();
+      if (this.opts.autoActivity) this.attachAutoActivity();
       await this.media.start((b64) => {
         if (this.micGated()) return; // halfDuplex: agent is speaking
         this.socket?.send(JSON.stringify({ event: 'media', data: b64 }));
@@ -287,6 +336,79 @@ export class TelenowCall {
         JSON.stringify({ event: 'text', text, ...(opts?.chat ? { chat: true } : {}) }),
       ) ?? false
     );
+  }
+
+  /**
+   * Tell the agent something it can't hear — what the user is looking at, what is in their
+   * cart — without it counting as something the user said. Silent unless `respond: 'when_idle'`:
+   * the agent uses it from its next reply. The agent must accept notes from the caller's app (its
+   * `liveContext.acceptClientNotes` setting), and it is always told such notes are unverified.
+   * Resolves with when the agent will see it; rejects with a {@link TelenowContextError}.
+   */
+  sendContext(text: string, opts?: ContextOptions): Promise<ContextDelivery> {
+    // WebRTC has no server-bound data channel for this yet.
+    if (this.room) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    const frame = {
+      event: 'contextual_update',
+      text,
+      ...(opts?.key !== undefined ? { key: opts.key } : {}),
+      ...(opts?.respond ? { respond: opts.respond } : {}),
+    };
+    return new Promise((resolve, reject) => {
+      if (!this.socket?.send(JSON.stringify(frame))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.pendingContext.push({ resolve, reject });
+    });
+  }
+
+  /**
+   * "The user is still here, just busy": restarts the agent's silence check-in so it doesn't
+   * ask "are you still there?". Resolves with how long until the agent would check in (ms), or
+   * `null` when no check-in is armed. See also the `autoActivity` option.
+   */
+  sendActivity(): Promise<number | null> {
+    if (this.room) return Promise.reject(new TelenowContextError('unsupported_transport'));
+    return new Promise((resolve, reject) => {
+      const sentAt = Date.now();
+      if (!this.socket?.send(JSON.stringify({ event: 'user_activity' }))) {
+        reject(new TelenowContextError('not_connected'));
+        return;
+      }
+      this.lastActivityAt = sentAt;
+      this.pendingActivity.push({ resolve, reject, sentAt });
+    });
+  }
+
+  /** `autoActivity`: watch for the user interacting with the page. */
+  private attachAutoActivity(): void {
+    if (typeof document === 'undefined' || this.detachActivity) return;
+    const onInteraction = () => this.onUserInteraction();
+    const kinds = ['keydown', 'input', 'pointerdown'] as const;
+    for (const k of kinds) document.addEventListener(k, onInteraction, { capture: true, passive: true });
+    this.detachActivity = () => {
+      for (const k of kinds) document.removeEventListener(k, onInteraction, { capture: true });
+    };
+  }
+
+  /**
+   * Pings when the last ping is about to stop covering the agent's check-in window: the window
+   * the server last reported, less the round trip that acknowledgement took.
+   */
+  private onUserInteraction(): void {
+    if (this._state !== 'live' || this.checkinAfterMs === null) return;
+    const every = this.checkinAfterMs;
+    if (every !== undefined && Date.now() - this.lastActivityAt < every - this.activityRttMs) return;
+    this.sendActivity().catch(() => {
+      /* the next interaction tries again */
+    });
+  }
+
+  /** Rejects every reply still owed: it can no longer arrive. */
+  private failPending(reason: string): void {
+    for (const p of this.pendingContext.splice(0)) p.reject(new TelenowContextError(reason));
+    for (const p of this.pendingActivity.splice(0)) p.reject(new TelenowContextError(reason));
   }
 
   /**
@@ -379,6 +501,9 @@ export class TelenowCall {
   private teardown(finalState: CallState): void {
     if (this.ended) return;
     this.ended = true;
+    this.failPending('call_ended');
+    this.detachActivity?.();
+    this.detachActivity = null;
     const sock = this.socket;
     this.socket = null;
     try {
@@ -434,6 +559,25 @@ export class TelenowCall {
       });
     } else if (ev === 'session_end') {
       this.stop();
+    } else if (ev === 'context_ack' || ev === 'context_rejected') {
+      const p = this.pendingContext.shift();
+      if (ev === 'context_ack') {
+        const d = m.delivery;
+        p?.resolve(d === 'held' || d === 'speaking_now' ? d : 'next_turn');
+      } else {
+        const max = typeof m.maxChars === 'number' ? m.maxChars : undefined;
+        p?.reject(new TelenowContextError(String(m.reason ?? 'rejected'), max));
+      }
+    } else if (ev === 'activity_ack' || ev === 'activity_rejected') {
+      const p = this.pendingActivity.shift();
+      if (ev === 'activity_ack') {
+        const next = typeof m.nextCheckinInMs === 'number' ? m.nextCheckinInMs : null;
+        this.checkinAfterMs = next;
+        if (p) this.activityRttMs = Math.max(0, Date.now() - p.sentAt);
+        p?.resolve(next);
+      } else {
+        p?.reject(new TelenowContextError(String(m.reason ?? 'rejected')));
+      }
     }
   }
 

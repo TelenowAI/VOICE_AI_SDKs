@@ -3,14 +3,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   TelenowCall,
+  TelenowContextError,
   type CallState,
+  type ContextDelivery,
+  type ContextOptions,
   type ReconnectPolicy,
   type TelenowSession,
   type TranscriptLine,
   type TurnTaking,
 } from '@telenow/client';
 
-export type { CallState, TranscriptLine, TelenowSession, TurnTaking };
+export type { CallState, TranscriptLine, TelenowSession, TurnTaking, ContextDelivery, ContextOptions };
+export { TelenowContextError };
 
 export interface UseVoiceCallOptions {
   /** Ephemeral client token (Authorization: Bearer) for init-web-call. */
@@ -38,6 +42,11 @@ export interface UseVoiceCallOptions {
   turnTaking?: TurnTaking;
   /** Reconnect tuning: maxAttempts, baseDelayMs, maxDelayMs, jitter. */
   reconnect?: ReconnectPolicy;
+  /**
+   * Tell the agent the user is still here while they type or click, so it doesn't ask "are you
+   * still there?" mid-form. Off by default; paced by the agent's own check-in delay.
+   */
+  autoActivity?: boolean;
 }
 
 export function useVoiceCall(opts: UseVoiceCallOptions) {
@@ -70,6 +79,7 @@ export function useVoiceCall(opts: UseVoiceCallOptions) {
       audio: o.audio,
       turnTaking: o.turnTaking,
       reconnect: o.reconnect,
+      autoActivity: o.autoActivity,
       onState: setState,
       onTranscript: (line) => setTranscript((t) => [...t, line]),
       onError: setError,
@@ -93,7 +103,24 @@ export function useVoiceCall(opts: UseVoiceCallOptions) {
     [],
   );
 
+  /**
+   * Tell the agent something it can't hear (a note, never counted as something the user said).
+   * Rejects with a TelenowContextError — `not_connected` when no call is running.
+   */
+  const sendContext = useCallback(
+    (text: string, o?: ContextOptions): Promise<ContextDelivery> =>
+      callRef.current?.sendContext(text, o) ?? Promise.reject(new TelenowContextError('not_connected')),
+    [],
+  );
+
+  /** "The user is still here, just busy": resolves with when the agent would next check in (ms). */
+  const sendActivity = useCallback(
+    (): Promise<number | null> =>
+      callRef.current?.sendActivity() ?? Promise.reject(new TelenowContextError('not_connected')),
+    [],
+  );
+
   useEffect(() => () => stop(), [stop]);
 
-  return { state, transcript, muted, error, start, stop, mute, sendText };
+  return { state, transcript, muted, error, start, stop, mute, sendText, sendContext, sendActivity };
 }

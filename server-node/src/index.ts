@@ -166,6 +166,29 @@ export interface WebCallSession {
   room?: string;
 }
 
+/** A note for `calls.sendContext` (`LIVE_CONTEXT_NOTES_PLAN.md`). Never counted as something the caller said. */
+export interface ContextNote {
+  text: string;
+  /** A later note with the same key replaces this one (payment status, order state…). */
+  key?: string;
+  /** `'when_idle'`: let the agent speak up about it once the line is quiet. Default: silent. */
+  respond?: 'none' | 'when_idle';
+}
+
+/** What `calls.sendContext` returns. */
+export interface ContextNoteResult {
+  noteId: string;
+  key: string | null;
+  /** When the agent will see it: from its next reply, or once a human hands the call back. */
+  delivery: 'next_turn' | 'held' | 'speaking_now';
+}
+
+/** What `calls.sendActivity` returns. */
+export interface ActivityResult {
+  /** How long until the agent would check in (ms), or `null` when no check-in is armed. */
+  nextCheckinInMs: number | null;
+}
+
 export class TelenowError extends Error {
   constructor(
     message: string,
@@ -266,6 +289,22 @@ export class Telenow {
         fromNumber: r.from,
         userId: r.userId,
       }),
+    /**
+     * Tell the agent something mid-call — a payment that went through, an order that shipped, a
+     * supervisor's steer — without it counting as something the caller said. Works on any live
+     * call (phone, SIP, web) by session id. Silent unless `respond: 'when_idle'`. A refusal
+     * throws `TelenowError`: 409 `no_agent` / `engine_unsupported` / `not_live`, 413
+     * `too_large` (`err.body.maxChars` says how much fits), 429 `rate_limited`.
+     */
+    sendContext: (sessionId: string, note: ContextNote): Promise<ContextNoteResult> =>
+      this.req<ContextNoteResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/context`, note),
+    /**
+     * "The caller is still here, just busy" (paying, reading, typing): restarts the agent's
+     * silence check-in so it doesn't ask "are you still there?". Ping again before
+     * `nextCheckinInMs` runs out while they stay busy.
+     */
+    sendActivity: (sessionId: string): Promise<ActivityResult> =>
+      this.req<ActivityResult>('POST', `/api/sessions/${encodeURIComponent(sessionId)}/activity`, {}),
     transfer: (sessionId: string, to: string): Promise<unknown> =>
       this.req('POST', `/api/sessions/${encodeURIComponent(sessionId)}/transfer`, { to }),
     end: (sessionId: string): Promise<unknown> =>
