@@ -3,7 +3,7 @@
 All notable changes to `@telenow/server` are documented here.
 This project adheres to [Semantic Versioning](https://semver.org).
 
-## [Unreleased]
+## [0.1.5] - 2026-10-10
 
 ### Fixed
 - **A per-call opener is now honored on queued calls.** `firstResponse` /
