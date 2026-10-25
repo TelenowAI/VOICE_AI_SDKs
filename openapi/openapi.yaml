@@ -386,6 +386,11 @@ paths:
                   key_id: { type: string, format: uuid }
                   key_name: { type: string }
                   key_role: { type: string, example: developer }
+                  parent_org_id:
+                    type: string
+                    format: uuid
+                    nullable: true
+                    description: Set when the key's org is a sub-account - its calls are billed to this parent.
         '401': { $ref: '#/components/responses/Error' }
 
   /api/v1/hooks:
@@ -464,8 +469,15 @@ paths:
     get:
       operationId: listNumbersSlim
       summary: Owned phone numbers (slim).
+      description: >-
+        Held numbers by default. includeReleased=true adds released ones (released_at set);
+        updatedAfter returns only numbers changed after that instant (exclusive), released ones
+        included. Each row carries updated_at and released_at.
       security: [{ ApiKeyAuth: [] }]
-      responses: { '200': { description: '{ numbers: [...], total }' } }
+      parameters:
+        - { name: includeReleased, in: query, schema: { type: boolean, default: false } }
+        - { name: updatedAfter, in: query, schema: { type: string, format: date-time } }
+      responses: { '200': { description: '{ numbers: [{ id, phone_number, provider, country, agent_id, is_active, updated_at, released_at }], total }' } }
 
   /api/v1/calls:
     get:
@@ -478,7 +490,18 @@ paths:
         - { name: sort, in: query, schema: { type: string, enum: [newest, oldest, longest, shortest] } }
         - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
         - { name: offset, in: query, schema: { type: integer, default: 0 } }
-      responses: { '200': { description: '{ calls: [...], total }' } }
+        - name: updatedAfter
+          in: query
+          description: >-
+            Start a "changed since" feed - calls changed after this instant (exclusive), oldest
+            change first, ordered by (updated_at, id). Not combinable with agent_id, status, sort
+            or offset.
+          schema: { type: string, format: date-time }
+        - name: cursor
+          in: query
+          description: Resume a feed exactly after the last call of the previous page (its nextCursor).
+          schema: { type: string }
+      responses: { '200': { description: '{ calls: [...], total } - with updatedAfter/cursor: { calls: [...], total: null, nextCursor }. Every call carries updated_at.' } }
 
   /api/v1/calls/{id}:
     get:
@@ -563,7 +586,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [call.started, call.ended, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment]
+            enum: [call.started, call.ended, call.completed, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment]
       responses:
         '200':
           description: OK
@@ -734,6 +757,195 @@ paths:
         '200': { description: '{ authorizeUrl, returnsTo, pollUrl }' }
         '400': { $ref: '#/components/responses/Error' }
 
+  # ------------------------------------------------------------------
+  # Sub-accounts — organizations this org creates for its own customers
+  # and pays for. owner/admin keys only; a sub-account's key gets 403.
+  # The same operations exist on /api/orgs/{orgId}/sub-accounts (JWT or
+  # key, {success,data} envelope).
+  # ------------------------------------------------------------------
+  /api/v1/sub-accounts:
+    get:
+      operationId: listSubAccounts
+      summary: List this org's sub-accounts, newest first.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [active, suspended, closed] } }
+        - { name: externalId, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, description: 'Clamped to 1–200 (not an error); the response echoes the value used.', schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - { name: offset, in: query, required: false, description: 'A negative value is read as 0.', schema: { type: integer, default: 0, minimum: 0 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccounts: { type: array, items: { $ref: '#/components/schemas/SubAccount' } }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: createSubAccount
+      summary: Create a sub-account — returns it AND its own API key (shown once).
+      description: >
+        Quiet creation: no signup emails, OTPs or welcome credit. Every charge the
+        sub-account causes is posted to this org's wallet. Unknown fields are
+        rejected (400). The returned key acts as the sub-account's own service
+        identity (a user nobody can sign in as, a member of that sub-account only).
+      security: [{ ApiKeyAuth: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateSubAccountRequest' } } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount: { $ref: '#/components/schemas/SubAccount' }
+                  apiKey: { $ref: '#/components/schemas/SubAccountKey' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sub-accounts/{id}:
+    get:
+      operationId: getSubAccount
+      summary: One sub-account, with month-to-date spend and live calls.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateSubAccount
+      summary: Rename, set externalId (null clears), change limits.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/UpdateSubAccountRequest' } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: closeSubAccount
+      summary: Close for good — keys revoked, calls refused and ended, workspace deleted.
+      description: >
+        Refused (409) while the sub-account still holds phone numbers. Idempotent - closing a
+        closed one is 200 and finishes a clean-up that was interrupted. Its externalId is free
+        for a new sub-account afterwards.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      responses:
+        '200': { description: The closed sub-account, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sub-accounts/{id}/suspend:
+    post:
+      operationId: suspendSubAccount
+      summary: Refuse every new call and end the live ones.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sub-accounts/{id}/resume:
+    post:
+      operationId: resumeSubAccount
+      summary: Lift a suspension.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sub-accounts/{id}/usage:
+    get:
+      operationId: getSubAccountUsage
+      summary: Calls, billable seconds and spend for a window (default — this billing month).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/SubAccountId' }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccountUsage' } } } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sub-accounts/{id}/keys:
+    post:
+      operationId: rotateSubAccountKey
+      summary: Mint a new key for the sub-account (revokes its other keys unless revokeExisting is false).
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                keyName: { type: string, maxLength: 120 }
+                keyRole: { type: string, enum: [admin, developer, viewer], default: admin }
+                revokeExisting: { type: boolean, default: true }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccountId: { type: string, format: uuid }
+                  revokedKeys: { type: integer }
+                  apiKey: { $ref: '#/components/schemas/SubAccountKey' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -745,6 +957,12 @@ components:
       scheme: bearer
       description: Ephemeral client token (or user JWT).
   parameters:
+    SubAccountId:
+      name: id
+      in: path
+      required: true
+      description: The sub-account's organization id.
+      schema: { type: string, format: uuid }
     ConnectionId:
       name: id
       in: path
@@ -771,6 +989,73 @@ components:
               success: { type: boolean, example: false }
               error: { type: string }
   schemas:
+    SubAccountLimits:
+      type: object
+      description: 'Each field - null = no limit, 0 = stopped. In a create/update, an absent field is unchanged (create - no limit).'
+      additionalProperties: false
+      properties:
+        maxConcurrentCalls: { type: integer, minimum: 0, nullable: true }
+        monthlySpendLimitUsd: { type: number, minimum: 0, nullable: true }
+        totalSpendLimitUsd: { type: number, minimum: 0, nullable: true }
+    SubAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: "The sub-account's organization id." }
+        name: { type: string }
+        externalId: { type: string, nullable: true }
+        status: { type: string, enum: [active, suspended, closed] }
+        limits: { $ref: '#/components/schemas/SubAccountLimits' }
+        suspendedAt: { type: string, format: date-time, nullable: true }
+        suspendedReason: { type: string, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        usage:
+          type: object
+          properties:
+            monthToDateSpendUsd: { type: number }
+            activeCalls: { type: integer }
+    SubAccountKey:
+      type: object
+      description: The minted key. `key` is the secret and is returned exactly once.
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string, example: 'vai_live_…' }
+        lastFour: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [admin, developer, viewer] }
+        createdAt: { type: string, format: date-time }
+    CreateSubAccountRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 160 }
+        externalId: { type: string, maxLength: 200, description: "Your id for this customer; unique among your OPEN sub-accounts (a closed one frees it)." }
+        limits: { $ref: '#/components/schemas/SubAccountLimits' }
+        keyName: { type: string, maxLength: 120, default: Sub-account key }
+        keyRole: { type: string, enum: [admin, developer, viewer], default: admin }
+    UpdateSubAccountRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name: { type: string, maxLength: 160 }
+        externalId: { type: string, maxLength: 200, nullable: true }
+        limits: { $ref: '#/components/schemas/SubAccountLimits' }
+    SubAccountUsage:
+      type: object
+      properties:
+        subAccountId: { type: string, format: uuid }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        calls: { type: integer, description: Calls that started in the window. }
+        billableSeconds: { type: integer }
+        spendUsd: { type: number, description: Charged in the window. }
+        activeCalls: { type: integer }
+        monthToDateSpendUsd: { type: number }
+        totalSpendUsd: { type: number }
+        limits: { $ref: '#/components/schemas/SubAccountLimits' }
+        status: { type: string, enum: [active, suspended, closed] }
     ConnectionRequest:
       type: object
       description: >
@@ -810,6 +1095,41 @@ components:
       properties:
         success: { type: boolean, example: true }
         data: { type: object }
+    CallCompletedEvent:
+      description: >-
+        The `call.completed` webhook body - exactly ONE per finished call, whatever the
+        outcome (answered, no-answer, busy, failed, a dial refused before it rang, a call the
+        platform closed). Also carries orgId, occurredAt, identifier and, on a sub-account's
+        event, subAccountId, like every session-scoped event.
+      type: object
+      properties:
+        event: { type: string, enum: [call.completed] }
+        sessionId: { type: string, format: uuid }
+        agentId: { type: string, format: uuid, nullable: true }
+        orgId: { type: string, format: uuid }
+        subAccountId: { type: string, format: uuid, description: Present only on a sub-account's event }
+        identifier: { type: string, nullable: true }
+        occurredAt: { type: string, format: date-time }
+        outcome: { type: string, enum: [answered, no-answer, busy, failed], description: The carrier's verdict; never null }
+        disposition: { type: string, nullable: true, description: Raw carrier disposition; null when no carrier reported one }
+        status: { type: string, enum: [ended, orphaned] }
+        endReason: { type: string, nullable: true, description: Open set - match defensively }
+        answeredBy: { type: string, nullable: true, description: 'AMD verdict: human, machine*, amd_unconfirmed, ...' }
+        direction: { type: string, enum: [inbound, outbound, web, whatsapp, instagram] }
+        channel: { type: string }
+        callSid: { type: string, nullable: true }
+        fromNumber: { type: string, nullable: true }
+        toNumber: { type: string, nullable: true }
+        durationSecs: { type: integer, nullable: true }
+        billableSecs: { type: integer, nullable: true, description: Seconds the carrier billed; null when none reported }
+        startTime: { type: string, format: date-time }
+        endTime: { type: string, format: date-time, nullable: true }
+        variables: { type: object, nullable: true }
+        analysis: { type: object, nullable: true, description: Present only if post-call analysis already finished }
+        callRecord: { type: object, description: Present only when the agent graded the call }
+        campaignId: { type: string, format: uuid, nullable: true }
+        campaignTargetId: { type: string, format: uuid, nullable: true }
+        attempt: { type: integer, nullable: true, description: This target's dial number, 1 for the first }
     Hook:
       type: object
       properties:
@@ -844,8 +1164,8 @@ components:
           type: array
           items: { type: string }
           description: >-
-            19 valid names, or "*" for all. Session-scoped (carry sessionId/agentId):
-            call.started, call.ended, call.machine_detected, call.dtmf,
+            20 valid names, or "*" for all. Session-scoped (carry sessionId/agentId):
+            call.started, call.ended, call.completed, call.machine_detected, call.dtmf,
             transcript.ready, tool.invoked, recording.ready, call.analyzed.
             Org-scoped (NO agentId — an agent-scoped hook never receives these):
             whatsapp.message.received, whatsapp.message.status,
