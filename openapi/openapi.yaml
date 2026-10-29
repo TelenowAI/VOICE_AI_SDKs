@@ -1200,6 +1200,625 @@ paths:
         '200': { $ref: '#/components/responses/Done' }
         '403': { $ref: '#/components/responses/Error' }
 
+  # ── Calls and recordings, by an org API key. The path's orgId must be the key's org. Writes need an
+  #    owner, admin or developer key ("This API key's role ('viewer') is read-only on this endpoint");
+  #    the key's creator must be a member. Call rows use snake_case keys; money is a decimal string. ──
+  /api/orgs/{orgId}/calls:
+    get:
+      operationId: listCalls
+      summary: The org's calls — a filtered page (newest first by default), or with updatedAfter / cursor every change in order.
+      description: >-
+        Page mode: filters, `sort`, `limit` / `offset`; with no `from`, `to` or `asOf`, the last 30
+        days. `total` is counted only on the first page of a window of at most 92 days (else null).
+        Feed mode (`updatedAfter` or `cursor`): every call created or changed after the position,
+        oldest change first, `nextCursor` to resume — a call comes back whenever it changes (ended,
+        charged, analysed, recorded, wrapped up). No filters in feed mode (400 naming them).
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { name: agentId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: status, in: query, required: false, description: 'active, inactive, ended, …', schema: { type: string } }
+        - { name: callMode, in: query, required: false, description: '`agent` or `manual`.', schema: { type: string } }
+        - { name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/CallChannel' } }
+        - { name: disposition, in: query, required: false, schema: { type: string } }
+        - { name: campaignId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: from, in: query, required: false, description: 'First day (YYYY-MM-DD, in `tz`), inclusive.', schema: { type: string, format: date } }
+        - { name: to, in: query, required: false, description: 'Last day (YYYY-MM-DD, in `tz`), inclusive.', schema: { type: string, format: date } }
+        - { name: tz, in: query, required: false, description: 'IANA zone for from / to (default Asia/Kolkata).', schema: { type: string } }
+        - { name: asOf, in: query, required: false, description: 'Calls started before this instant (a stable view while paging).', schema: { type: string, format: date-time } }
+        - { name: mine, in: query, required: false, description: "Only calls the key's creator started.", schema: { type: boolean } }
+        - { name: caller, in: query, required: false, description: 'Digits matched inside the caller number.', schema: { type: string } }
+        - { name: number, in: query, required: false, description: 'Comma-separated; digits matched inside either number.', schema: { type: string } }
+        - { name: sessionId, in: query, required: false, description: 'Comma-separated call ids (invalid ones are counted in `warnings`).', schema: { type: string } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [newest, oldest, longest, shortest], default: newest } }
+        - { name: limit, in: query, required: false, description: 'Clamped to 1–200.', schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: withTotal, in: query, required: false, schema: { type: boolean, default: true } }
+        - { name: include, in: query, required: false, description: '`facets`: counts per channel, status, mode, disposition and campaign.', schema: { type: string, enum: [facets] } }
+        - { name: updatedAfter, in: query, required: false, description: 'Feed mode: calls changed after this instant (exclusive).', schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, required: false, description: 'Feed mode: a nextCursor this route returned. Not with updatedAfter.', schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [calls, total]
+                    properties:
+                      calls: { type: array, items: { $ref: '#/components/schemas/CallRow' } }
+                      total: { type: integer, nullable: true }
+                      nextCursor: { type: string, description: 'Feed mode only (always set there): send it back as cursor.' }
+                      facets:
+                        type: object
+                        description: 'Only with include=facets; a dimension with no values is absent.'
+                        properties:
+                          channel: { type: array, items: { $ref: '#/components/schemas/FacetCount' } }
+                          status: { type: array, items: { $ref: '#/components/schemas/FacetCount' } }
+                          call_mode: { type: array, items: { $ref: '#/components/schemas/FacetCount' } }
+                          disposition: { type: array, items: { $ref: '#/components/schemas/FacetCount' } }
+                          campaign:
+                            type: array
+                            items:
+                              type: object
+                              required: [value, label, count]
+                              properties:
+                                value: { type: string, format: uuid }
+                                label: { type: string }
+                                count: { type: integer }
+                      warnings:
+                        type: array
+                        description: 'Only when some sessionId / number entries were dropped.'
+                        items:
+                          type: object
+                          required: [code, count]
+                          properties:
+                            code: { type: string, enum: [invalid_session_ids, invalid_numbers] }
+                            count: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}:
+    get:
+      operationId: getCall
+      summary: One call with its transcript, recordings, provider stack, token use, post-call results and what is missing.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallDetail' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}/cost:
+    get:
+      operationId: getCallCost
+      summary: "What the call was charged, by component — null until it is settled (a few minutes after it ends)."
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK (data null for a call not yet settled, unknown, or not this org's).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { allOf: [{ $ref: '#/components/schemas/CallCharge' }], nullable: true }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}/trace:
+    get:
+      operationId: getCallTrace
+      summary: The call's event trace (when the agent's debug mode recorded one) and its post-call events.
+      description: >-
+        Needs an owner or admin key whose creator is an owner or admin. Without a stored trace the
+        answer carries `reason` beside `data`, and `data` holds only the post-call events (or is
+        null when there are none).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  reason: { type: string, description: 'Only when no trace is stored.' }
+                  data:
+                    type: object
+                    nullable: true
+                    required: [call, schema_version, event_count, truncated, live_trace, events]
+                    properties:
+                      call: { $ref: '#/components/schemas/CallRow' }
+                      schema_version: { type: integer }
+                      event_count: { type: integer }
+                      truncated: { type: boolean }
+                      live_trace: { type: boolean, description: 'true when a recorded trace is included.' }
+                      post_call_count: { type: integer, description: 'With a stored trace only.' }
+                      max_events: { type: integer, description: 'With a stored trace only.' }
+                      events: { type: array, items: { type: object, additionalProperties: true, description: 'A trace event ({type, seq, t_ms, …}) or a post-call event.' } }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}/comments:
+    get:
+      operationId: listCallComments
+      summary: Notes left on the call, oldest first.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK (empty for an unknown call).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [comments]
+                    properties:
+                      comments: { type: array, items: { $ref: '#/components/schemas/CallComment' } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: addCallComment
+      summary: Leave a note on the call.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallComment' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/orgs/{orgId}/calls/{id}/followups:
+    get:
+      operationId: listCallFollowups
+      summary: Follow-ups on the call — open first, then by due date.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK (empty for an unknown call).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [followups]
+                    properties:
+                      followups: { type: array, items: { $ref: '#/components/schemas/CallFollowup' } }
+        '403': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: addCallFollowup
+      summary: Add a follow-up to the call.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body: { type: string, minLength: 1 }
+                dueDate: { type: string, format: date-time, nullable: true }
+      responses:
+        '200':
+          description: Added
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallFollowup' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/orgs/{orgId}/calls/{id}/followups/{fid}:
+    patch:
+      operationId: updateCallFollowup
+      summary: Complete, reopen or edit a follow-up — only the key whose creator wrote it may.
+      description: A follow-up written by someone else answers 404, like an unknown one.
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { $ref: '#/components/parameters/CallId' }
+        - { name: fid, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, done] }
+                body: { type: string, description: 'Blank leaves it as it is.' }
+                dueDate: { type: string, format: date-time }
+                clearDueDate: { type: boolean, default: false, description: 'Wins over dueDate.' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallFollowup' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/orgs/{orgId}/calls/{id}/insights:
+    get:
+      operationId: getCallInsights
+      summary: The call's insights (sentiment, summary, topics, talk split), once generated.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallInsights' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+    post:
+      operationId: generateCallInsights
+      summary: Generate (or regenerate) the call's insights from its transcript.
+      description: >-
+        Runs on Telenow's model at no charge to the account. Without a model available, only the
+        word and turn counts are filled (`model` null).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/CallInsights' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}/wrapup:
+    post:
+      operationId: wrapUpCall
+      summary: Record how the call ended for the team (a wrap-up disposition), with an optional note.
+      description: The last wrap-up wins; a note is added as a comment. The call reappears in the change feed.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disposition]
+              properties:
+                disposition: { type: string, minLength: 1, maxLength: 64 }
+                note: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [id, wrapupDisposition]
+                    properties:
+                      id: { type: string, format: uuid }
+                      wrapupDisposition: { type: string }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/orgs/{orgId}/calls/{id}/listen:
+    post:
+      operationId: listenToCall
+      summary: A one-time ticket to listen to a live call (both legs, read-only).
+      description: >-
+        The key's creator must be an owner or admin. Open `wsUrl` within 30 s; it streams binary
+        frames — one leg byte (0 customer, 1 agent) and 8 kHz μ-law audio. 409 when the call is
+        not live.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveTicketAnswer' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/{id}/stream-ticket:
+    post:
+      operationId: streamCallEvents
+      summary: A one-time ticket to follow a live call's events and partial transcript.
+      description: Open `wsUrl` within 30 s; it sends JSON text frames {topic, sessionId, data}. 409 when the call is not live.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LiveTicketAnswer' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/columns:
+    get:
+      operationId: listCallColumns
+      summary: The columns a call export can carry, which are default, and the row caps.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [columns, maxRows, maxRowsWide, channels]
+                    properties:
+                      columns:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, header, wide, default, gridDefault]
+                          properties:
+                            id: { type: string }
+                            header: { type: string }
+                            wide: { type: boolean, description: 'A wide column lowers the row cap to maxRowsWide.' }
+                            default: { type: boolean, description: 'Exported when `fields` is not given.' }
+                            gridDefault: { type: boolean }
+                      maxRows: { type: integer }
+                      maxRowsWide: { type: integer }
+                      channels: { type: array, items: { $ref: '#/components/schemas/CallChannel' } }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/calls/export:
+    get:
+      operationId: exportCalls
+      summary: The filtered calls as a CSV file (the list's filters; `fields` picks and orders the columns).
+      description: >-
+        At most maxRows rows (maxRowsWide with a wide column, see listCallColumns); a larger set is
+        cut and says so in its headers. Two exports run at a time per server (429 with `retryAfter`).
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { name: fields, in: query, required: false, description: 'Comma-separated column ids; default the default columns.', schema: { type: string } }
+        - { name: agentId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: status, in: query, required: false, schema: { type: string } }
+        - { name: callMode, in: query, required: false, schema: { type: string } }
+        - { name: channel, in: query, required: false, schema: { $ref: '#/components/schemas/CallChannel' } }
+        - { name: disposition, in: query, required: false, schema: { type: string } }
+        - { name: campaignId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: from, in: query, required: false, schema: { type: string, format: date } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date } }
+        - { name: tz, in: query, required: false, schema: { type: string } }
+        - { name: asOf, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: mine, in: query, required: false, schema: { type: boolean } }
+        - { name: caller, in: query, required: false, schema: { type: string } }
+        - { name: number, in: query, required: false, schema: { type: string } }
+        - { name: sessionId, in: query, required: false, schema: { type: string } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [newest, oldest, longest, shortest], default: newest } }
+      responses:
+        '200':
+          description: The file (UTF-8, CRLF, a header row).
+          headers:
+            Content-Disposition: { schema: { type: string }, description: 'attachment; filename="calls-YYYY-MM-DD.csv" (…-partial-<kept>-of-<total>.csv when cut).' }
+            x-export-truncated: { schema: { type: string, enum: ['true', 'false'] } }
+            x-export-rows: { schema: { type: integer }, description: 'When cut: rows kept.' }
+            x-export-total: { schema: { type: integer }, description: 'When cut: rows that matched.' }
+            x-export-columns: { schema: { type: string }, description: '"<n>-of-<all>".' }
+          content:
+            text/csv: { schema: { type: string } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings:
+    get:
+      operationId: listRecordings
+      summary: The org's recordings, newest first — the latest 200, or with sessionId / limit / cursor a page.
+      description: >-
+        Without sessionId, limit or cursor: the newest 200 (agentId narrows them), `total` = rows
+        returned. With any of them: a page in (created_at, id) order, `nextCursor` set when the page
+        is full.
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { name: agentId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: sessionId, in: query, required: false, description: "One call's recordings.", schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, description: 'Clamped to 1–200.', schema: { type: integer, minimum: 1, maximum: 200, default: 200 } }
+        - { name: cursor, in: query, required: false, description: 'A nextCursor this route returned.', schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [recordings, total]
+                    properties:
+                      recordings: { type: array, items: { $ref: '#/components/schemas/Recording' } }
+                      total: { type: integer, description: 'Rows in this answer.' }
+                      nextCursor: { type: string, nullable: true, description: 'Paged only: null on the last page.' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings/upload:
+    post:
+      operationId: uploadRecording
+      summary: Store a recording (up to 100 MB), optionally tied to a call and an agent.
+      description: >-
+        Fires `recording.ready` to the org's webhooks. Tied to a call, it replaces that call's
+        server-side fallback recording. `session_id` and `agent_id` must be this org's own (404
+        otherwise, before anything is stored).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+                session_id: { type: string, format: uuid, description: 'The call it records.' }
+                agent_id: { type: string, format: uuid }
+                channel: { type: string, maxLength: 20, default: web }
+                mime: { type: string, maxLength: 60, default: audio/wav }
+                sample_rate: { type: integer }
+                duration_sec: { type: integer, description: 'Seconds; derived from a WAV when missing or out of range.' }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/Recording' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '413': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings/{id}:
+    get:
+      operationId: getRecording
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/Recording' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings/{id}/file:
+    get:
+      operationId: downloadRecording
+      summary: "The recording's audio, in the type it was stored as (no ranges)."
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
+      responses:
+        '200': { $ref: '#/components/responses/RecordingAudio' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings/{id}/signed-url:
+    get:
+      operationId: signRecordingUrl
+      summary: A link to the recording's audio that works without a key for 5 minutes.
+      description: >-
+        On a deployment that stores recordings in object storage, a presigned URL. Otherwise (and
+        for a recording stored elsewhere than the current store, 502) download it with
+        downloadRecording.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
+      responses:
+        '200': { $ref: '#/components/responses/SignedUrl' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/call-audio/{id}/file:
+    get:
+      operationId: downloadCallAudio
+      summary: The same as downloadRecording, at a path ad blockers leave alone.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
+      responses:
+        '200': { $ref: '#/components/responses/RecordingAudio' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/call-audio/{id}/signed-url:
+    get:
+      operationId: signCallAudioUrl
+      summary: The same as signRecordingUrl, at a path ad blockers leave alone.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
+      responses:
+        '200': { $ref: '#/components/responses/SignedUrl' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
   # ------------------------------------------------------------------
   # /api/v1 — key-authed integration surface (Zapier / Make / n8n /
   # viaSocket). Org always comes from the API key; responses are FLAT
@@ -1978,6 +2597,17 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    CallId:
+      name: id
+      in: path
+      required: true
+      description: The call (session) id.
+      schema: { type: string, format: uuid }
+    RecordingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
     AgentView:
       name: view
       in: query
@@ -2011,6 +2641,25 @@ components:
             properties:
               success: { type: boolean, example: true }
               message: { type: string }
+    RecordingAudio:
+      description: The audio, with the type it was stored as (Content-Disposition inline).
+      content:
+        audio/*: { schema: { type: string, format: binary } }
+    SignedUrl:
+      description: OK
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, data]
+            properties:
+              success: { type: boolean, example: true }
+              data:
+                type: object
+                required: [url, expiresAt]
+                properties:
+                  url: { type: string }
+                  expiresAt: { type: string, format: date-time }
     BadBody:
       description: The request does not match the documented shape (a missing or mistyped field, a bad query or path value). Plain text.
       content:
@@ -2619,3 +3268,261 @@ components:
         document_count: { type: integer, nullable: true }
         partner_client_id: { type: string, format: uuid, nullable: true }
         document_ids: { type: array, items: { type: string, format: uuid }, nullable: true, description: 'The documents the agent is limited to; null = the whole base.' }
+    CallChannel:
+      type: string
+      enum: [telephony, web_call, web_chat, whatsapp, instagram, chat, softphone, simulation]
+    FacetCount:
+      type: object
+      required: [value, count]
+      properties:
+        value: { type: string }
+        count: { type: integer }
+    CallRow:
+      type: object
+      description: >-
+        A call as the call log lists it. Keys are snake_case and always present. `lead`, `source`,
+        `caller_memory` and `variables` read null once the call's content is purged
+        (`content_purged_at`).
+      required: [id, org_id, agent_id, agent_name, user_id, initiated_by, initiated_by_name, initiated_via, initiated_by_email, initiated_by_api_key, status, call_mode, channel, direction, from_number, to_number, phone_number, call_sid, start_time, end_time, duration_sec, answered_by, disposition, wrapup_disposition, resp_ms_avg, resp_ms_max, resp_samples, agent_audible_count, audio_gap_count, stt_ms_avg, turn_hold_ms_avg, llm_ms_avg, tts_ms_avg, net_rtt_ms_avg, flow_ms_avg, recording_id, lead, source, caller_memory, variables, created_at, objectives_state, content_purged_at, updated_at, charge_usd, artifacts]
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid, nullable: true }
+        agent_id: { type: string, format: uuid }
+        agent_name: { type: string, nullable: true }
+        user_id: { type: string, format: uuid, nullable: true }
+        initiated_by: { type: string, format: uuid, nullable: true, description: 'The member who started it (for a key, its creator).' }
+        initiated_by_name: { type: string, nullable: true }
+        initiated_via: { type: string, enum: [user, api], nullable: true }
+        initiated_by_email: { type: string, nullable: true }
+        initiated_by_api_key: { type: string, format: uuid, nullable: true }
+        status: { type: string, description: 'active, inactive, ended, …' }
+        call_mode: { type: string }
+        channel: { $ref: '#/components/schemas/CallChannel' }
+        direction: { type: string, enum: [web, whatsapp, instagram, inbound, outbound] }
+        from_number: { type: string, nullable: true }
+        to_number: { type: string, nullable: true }
+        phone_number: { type: string, nullable: true }
+        call_sid: { type: string, nullable: true }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time, nullable: true }
+        duration_sec: { type: integer, nullable: true }
+        answered_by: { type: string, nullable: true }
+        disposition: { type: string, nullable: true }
+        wrapup_disposition: { type: string, nullable: true }
+        resp_ms_avg: { type: integer, nullable: true }
+        resp_ms_max: { type: integer, nullable: true }
+        resp_samples: { type: integer, nullable: true }
+        agent_audible_count: { type: integer, nullable: true }
+        audio_gap_count: { type: integer, nullable: true }
+        stt_ms_avg: { type: integer, nullable: true }
+        turn_hold_ms_avg: { type: integer, nullable: true }
+        llm_ms_avg: { type: integer, nullable: true }
+        tts_ms_avg: { type: integer, nullable: true }
+        net_rtt_ms_avg: { type: integer, nullable: true }
+        flow_ms_avg: { type: integer, nullable: true }
+        recording_id: { type: string, format: uuid, nullable: true, description: 'The latest recording.' }
+        lead: { nullable: true, description: 'The lead the call was made for, as given.' }
+        source: { type: string, nullable: true }
+        caller_memory: { nullable: true, description: 'What the agent remembered about the caller.' }
+        variables: { type: object, additionalProperties: true, nullable: true }
+        created_at: { type: string, format: date-time }
+        objectives_state: { nullable: true, description: "The call's objectives as the agent left them." }
+        content_purged_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time, nullable: true }
+        charge_usd: { type: string, nullable: true, example: '0.42', description: 'What the call was charged (decimal string); null until settled.' }
+        artifacts:
+          type: object
+          required: [analysis, cost, latency, recording, trace]
+          properties:
+            analysis: { type: boolean }
+            cost: { type: boolean }
+            latency: { type: boolean }
+            recording: { type: boolean }
+            trace: { type: boolean }
+    CallDetail:
+      allOf:
+        - { $ref: '#/components/schemas/CallRow' }
+        - type: object
+          required: [transcript, participants, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, llm_cached_tokens, recordings, post_call, stack, completeness]
+          properties:
+            transcript:
+              type: array
+              items:
+                type: object
+                required: [role, text, at, agent_id]
+                properties:
+                  role: { type: string }
+                  text: { type: string }
+                  at: { type: string, format: date-time }
+                  agent_id: { type: string, nullable: true, description: 'Which agent spoke, on a call handed between agents.' }
+            participants: { type: object, additionalProperties: { type: string }, description: 'Agent id → name, for the agents on the call.' }
+            llm_prompt_tokens: { type: integer }
+            llm_completion_tokens: { type: integer }
+            llm_total_tokens: { type: integer }
+            llm_cached_tokens: { type: integer }
+            recordings:
+              type: array
+              items:
+                type: object
+                required: [id, channel, duration_sec, created_at, source]
+                properties:
+                  id: { type: string, format: uuid }
+                  channel: { type: string }
+                  duration_sec: { type: integer, nullable: true }
+                  created_at: { type: string, format: date-time }
+                  source: { type: string, nullable: true, description: '`transfer_bridge` for the recording after a transfer.' }
+            post_call: { type: array, items: { $ref: '#/components/schemas/PostCallEvent' } }
+            stack:
+              type: array
+              items:
+                type: object
+                required: [kind, provider, model, voice, route]
+                properties:
+                  kind: { type: string, enum: [llm, stt, tts] }
+                  provider: { type: string }
+                  model: { type: string, nullable: true }
+                  voice: { type: string, nullable: true }
+                  route:
+                    type: object
+                    nullable: true
+                    required: [label, tierServed, tierRequested, region]
+                    properties:
+                      label: { type: string }
+                      tierServed: { type: string, nullable: true }
+                      tierRequested: { type: string, nullable: true }
+                      region: { type: string, nullable: true }
+            failureCause: { type: string, description: 'Only for a failed, busy or unanswered call the carrier explained.' }
+            voiceStackIncidents:
+              type: array
+              maxItems: 10
+              items:
+                type: object
+                required: [component, provider, keySource, attribution, error, createdAt]
+                properties:
+                  component: { type: string }
+                  provider: { type: string }
+                  keySource: { type: string }
+                  attribution: { type: string }
+                  error: { type: string }
+                  createdAt: { type: string, format: date-time }
+            completeness:
+              type: object
+              required: [recording, metrics, transcript, analysis]
+              properties:
+                recording: { $ref: '#/components/schemas/Completeness' }
+                metrics: { $ref: '#/components/schemas/Completeness' }
+                transcript: { $ref: '#/components/schemas/Completeness' }
+                analysis: { $ref: '#/components/schemas/Completeness' }
+            data_gaps:
+              type: array
+              description: 'Only when something is missing.'
+              items: { type: string, enum: [recording_missing, telemetry_missing, transcript_missing, analysis_missing, answered_no_media] }
+    Completeness:
+      type: string
+      enum: [present, missing, pending, not_applicable]
+    PostCallEvent:
+      type: object
+      description: 'One thing the post-call plane did for the call; which keys it has depends on `type`.'
+      required: [type]
+      properties:
+        type: { type: string, enum: [post_call.analysis, destination.write, app.event, post_call.email, post_call.whatsapp] }
+        at: { type: string, nullable: true }
+        status: { type: string }
+        model: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        destination: { type: string }
+        app: { type: string }
+        topic: { type: string }
+        route: { type: string, nullable: true }
+        attempts: { type: integer }
+        next_attempt_at: { type: string, nullable: true }
+    CallCharge:
+      type: object
+      description: What one call was charged, by component (decimal strings, USD).
+      required: [sessionId, orgId, callType, llmUsd, sttUsd, ttsUsd, telephonyUsd, platformAiUsd, postCallAnalysisUsd, simulationUsd, embeddingUsd, platformFeeUsd, totalChargeUsd, hasEstimates, breakdown, ratedAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        callType: { type: string }
+        llmUsd: { type: string }
+        sttUsd: { type: string }
+        ttsUsd: { type: string }
+        telephonyUsd: { type: string }
+        platformAiUsd: { type: string }
+        postCallAnalysisUsd: { type: string }
+        simulationUsd: { type: string }
+        embeddingUsd: { type: string }
+        platformFeeUsd: { type: string }
+        totalChargeUsd: { type: string }
+        hasEstimates: { type: boolean, description: 'Some component was priced from an estimate.' }
+        breakdown: { type: object, additionalProperties: true, description: 'The rated events (`events`) and the fee rule applied.' }
+        ratedAt: { type: string, format: date-time }
+    CallComment:
+      type: object
+      required: [id, session_id, created_by, body, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        created_by: { type: string, format: uuid, nullable: true }
+        body: { type: string }
+        created_at: { type: string, format: date-time }
+    CallFollowup:
+      type: object
+      required: [id, session_id, created_by, body, due_date, status, completed_at, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        created_by: { type: string, format: uuid, nullable: true }
+        body: { type: string }
+        due_date: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [open, done] }
+        completed_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    CallInsights:
+      type: object
+      required: [sessionId, orgId, sentiment, sentimentScore, summary, topics, keywords, agentWords, customerWords, agentTurns, customerTurns, model, createdAt, updatedAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        orgId: { type: string, format: uuid }
+        sentiment: { type: string, enum: [positive, neutral, negative], nullable: true }
+        sentimentScore: { type: number, minimum: -1, maximum: 1, nullable: true }
+        summary: { type: string, nullable: true }
+        topics: { type: array, items: { type: string } }
+        keywords: { type: array, items: { type: string } }
+        agentWords: { type: integer }
+        customerWords: { type: integer }
+        agentTurns: { type: integer }
+        customerTurns: { type: integer }
+        model: { type: string, nullable: true, description: '"provider/model"; null when only the counts were filled.' }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    LiveTicketAnswer:
+      type: object
+      required: [success, data]
+      properties:
+        success: { type: boolean, example: true }
+        data:
+          type: object
+          required: [ticket, wsUrl]
+          properties:
+            ticket: { type: string, description: 'Single use, 30 s.' }
+            wsUrl: { type: string, description: 'The WebSocket to open (the ticket is in it).' }
+    Recording:
+      type: object
+      description: A stored recording. Keys are snake_case and always present.
+      required: [id, org_id, session_id, agent_id, channel, storage_kind, storage_path, mime, sample_rate, duration_sec, size_bytes, metadata, created_at, deleted_at]
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid, nullable: true }
+        agent_id: { type: string, format: uuid, nullable: true }
+        channel: { type: string }
+        storage_kind: { type: string, description: 'Where the bytes live (local_fs, s3, …).' }
+        storage_path: { type: string, description: 'Internal; download with downloadRecording.' }
+        mime: { type: string }
+        sample_rate: { type: integer, nullable: true }
+        duration_sec: { type: integer, nullable: true }
+        size_bytes: { type: integer, nullable: true }
+        metadata: { nullable: true, description: 'e.g. source (server_fallback, transfer_bridge).' }
+        created_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
