@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Telenow Voice API
-  version: 0.2.0
+  version: 1.0.0
   description: >
     Control-plane API for the Telenow Voice SDK. Generate backend clients in any
     language from this spec (see README). Audio is carried over a separate
@@ -13,6 +13,12 @@ info:
     The backend's tests hold this document to the routes: every operation is served, and
     every route an org API key reaches is described here or listed, with its reason, in
     `src/features/api_surface/undocumented.tsv`.
+
+
+    1.0.0 is the first released version. `openapi/released/openapi.yaml` holds the version last
+    released, and the backend's tests fail on any change that would break a client written
+    against it, unless the change is accepted (with its reason) in
+    `openapi/released/accepted_breaks.tsv` and the major version is raised.
 servers:
   - url: https://api.telenow.ai
     description: Production
