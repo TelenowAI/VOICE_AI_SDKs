@@ -344,31 +344,861 @@ paths:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/SessionInfo' } }
 
+  # ── Agents, by an org API key (or a dashboard login with X-Org-Id). The key's org is the agent's
+  #    org; another org's agent id answers 404. Writes need an owner, admin or developer key — a
+  #    member or viewer key gets 403 "This API key's role can't modify agents". ──
   /api/agents:
     get:
       operationId: listAgents
-      summary: List agents.
-      responses: { '200': { description: OK } }
+      summary: List the org's agents, a page at a time (most recently updated first unless `sort` says otherwise).
+      parameters:
+        - { name: limit, in: query, required: false, description: 'Clamped to 1–200.', schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: search, in: query, required: false, description: 'Matches the name (and description).', schema: { type: string } }
+        - { name: isActive, in: query, required: false, schema: { type: boolean } }
+        - { name: kind, in: query, required: false, description: '`flow` (a multi-context graph) or `single`.', schema: { type: string, enum: [flow, single] } }
+        - { name: status, in: query, required: false, description: '`draft` (has unpublished config) or `published`.', schema: { type: string, enum: [draft, published] } }
+        - { name: env, in: query, required: false, description: "Matched against `metadata.environment`.", schema: { type: string, enum: [dev, staging, prod] } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [new, old, az, za] } }
+        - { $ref: '#/components/parameters/AgentView' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [agents, total, limit, offset]
+                    properties:
+                      agents: { type: array, items: { $ref: '#/components/schemas/AgentRecord' } }
+                      total: { type: integer }
+                      limit: { type: integer }
+                      offset: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
     post:
       operationId: createAgent
       summary: Create an agent.
+      description: Needs an owner, admin or developer key.
+      parameters: [{ $ref: '#/components/parameters/AgentView' }]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
-      responses: { '200': { description: Created } }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/AgentRecord' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
 
   /api/agents/{id}:
     get:
       operationId: getAgent
-      parameters: [{ $ref: '#/components/parameters/AgentId' }]
-      responses: { '200': { description: OK } }
+      parameters: [{ $ref: '#/components/parameters/AgentId' }, { $ref: '#/components/parameters/AgentView' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/AgentRecord' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
     put:
       operationId: updateAgent
-      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      description: >-
+        Needs an owner, admin or developer key. Every save appends a version (`version` in the
+        answer; see listAgentVersions). Send `If-Match: "<version>"` to save only if the agent is
+        still at that version — otherwise 409 with code `agent_version_conflict` and `currentVersion`.
+      parameters:
+        - { $ref: '#/components/parameters/AgentId' }
+        - { $ref: '#/components/parameters/AgentView' }
+        - { name: If-Match, in: header, required: false, description: 'One version, quoted: "12".', schema: { type: string } }
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
-      responses: { '200': { description: Updated } }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data, version]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/AgentRecord' }
+                  version: { type: integer, nullable: true, description: 'The version this save made.' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+    delete:
+      operationId: deleteAgent
+      summary: Delete an agent (it stops answering; its calls and history stay).
+      description: >-
+        Needs an owner, admin or developer key. Where the deployment turns on its delete guard,
+        only an owner or admin key may, and an agent still answering a number, used by an active
+        campaign, or handed calls by another agent answers 409 naming what uses it.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Done' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/stats:
+    get:
+      operationId: getAgentStats
+      summary: The agent's lifetime call totals and average latencies.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/AgentStats' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/language-suggestion:
+    get:
+      operationId: suggestAgentLanguages
+      summary: The languages the agent's own text looks written in — a starting point for its language list. Calls no model.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [suggested, fromVoiceLanguage, linesRead]
+                    properties:
+                      suggested: { type: array, items: { type: string }, description: 'Language keys, "code|Name": "hi-IN|Hindi".' }
+                      fromVoiceLanguage: { type: string, nullable: true, description: "The voice's own language setting, if any." }
+                      linesRead: { type: integer }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/voice-preview:
+    post:
+      operationId: previewAgentVoice
+      summary: Hear the agent — a short WAV clip in its voice.
+      description: >-
+        Synthesises on the agent's own provider and key (or Telenow's), so it is a paid request and
+        meets the same spend check as a call (403 when the account is suspended or out of credit).
+        Needs an owner, admin or developer key. Throttled per org (429 with `retryAfter`). The text
+        is cut to 500 characters (200 on a realtime voice).
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                text: { type: string, description: 'Default: a short greeting.' }
+      responses:
+        '200':
+          description: The clip.
+          headers:
+            x-voice-engine: { description: '`cascade` (text to speech) or `s2s` (a realtime voice).', schema: { type: string } }
+            x-voice-provider: { schema: { type: string } }
+            x-voice-model: { description: 'Empty on the cascade engine.', schema: { type: string } }
+            x-voice-id: { schema: { type: string } }
+          content:
+            audio/wav: { schema: { type: string, format: binary } }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/logo:
+    post:
+      operationId: uploadAgentLogo
+      summary: Store an image as the agent's logo; then save the agent with `metadata.logoKey` set to the `key` returned.
+      description: >-
+        PNG, JPEG or WebP, at most 512 KB (the bytes are stored as sent — send a small square).
+        Needs an owner, admin or developer key. The agent itself is not changed by this call.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: 'Part Content-Type image/png, image/jpeg or image/webp.' }
+      responses:
+        '200':
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [key, url, size]
+                    properties:
+                      key: { type: string, example: 'agent-logos/<orgId>/<agentId>/<uuid>.png' }
+                      url: { type: string, description: 'A public URL of the stored image.' }
+                      size: { type: integer, description: Bytes. }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/app-tools:
+    get:
+      operationId: listAgentAppTools
+      summary: The installed-app tools this agent can run as flow tool steps.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [tools]
+                    properties:
+                      tools:
+                        type: array
+                        items:
+                          type: object
+                          required: [name, description, appId, spec]
+                          properties:
+                            name: { type: string, nullable: true }
+                            description: { type: string, nullable: true }
+                            appId: { type: string, nullable: true }
+                            spec: { type: object, additionalProperties: true, description: 'The tool as the agent runs it (name, description, parameters as JSON Schema, config).' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/versions:
+    get:
+      operationId: listAgentVersions
+      summary: The agent's saved versions, newest first (at most 100).
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [versions]
+                    properties:
+                      versions: { type: array, items: { $ref: '#/components/schemas/AgentVersion' } }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/versions/{version}/diff:
+    get:
+      operationId: diffAgentVersion
+      summary: What this version changed from the one before it, as display rows (secrets masked, long text cut; at most 60 rows).
+      parameters: [{ $ref: '#/components/parameters/AgentId' }, { $ref: '#/components/parameters/AgentVersionNumber' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [changes]
+                    properties:
+                      changes:
+                        type: array
+                        items:
+                          type: object
+                          required: [path, from, to]
+                          properties:
+                            path: { type: string, description: 'A display label: "System prompt", "LLM config · temperature".' }
+                            from: { type: string, nullable: true }
+                            to: { type: string, nullable: true }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/versions/{version}/perf:
+    get:
+      operationId: getAgentVersionPerf
+      summary: How calls went while this version was live, beside the version before it.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }, { $ref: '#/components/parameters/AgentVersionNumber' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [current, previous]
+                    properties:
+                      current: { $ref: '#/components/schemas/AgentVersionPerf' }
+                      previous: { allOf: [{ $ref: '#/components/schemas/AgentVersionPerf' }], nullable: true, description: 'Null for the first version.' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/versions/{version}/restore:
+    post:
+      operationId: restoreAgentVersion
+      summary: Put the agent back to this version's config; the restore is itself saved as a new version.
+      description: Needs an owner, admin or developer key.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }, { $ref: '#/components/parameters/AgentVersionNumber' }, { $ref: '#/components/parameters/AgentView' }]
+      responses:
+        '200':
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/AgentRecord' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/agents/{id}/analysis/rollup:
+    get:
+      operationId: getAgentAnalysisRollup
+      summary: Post-call analysis totals for the agent over a window (default — the last 30 days).
+      description: An agent id with no analysed calls (or not in this org) answers zeros.
+      parameters:
+        - { $ref: '#/components/parameters/AgentId' }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, description: 'Default: now. The window is [from, to).', schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [from, to, rollup]
+                    properties:
+                      from: { type: string, format: date-time }
+                      to: { type: string, format: date-time }
+                      rollup: { $ref: '#/components/schemas/AgentAnalytics' }
+        '400': { $ref: '#/components/responses/BadBody' }
+
+  /api/agents/{id}/analysis/calls:
+    get:
+      operationId: listAgentAnalyzedCalls
+      summary: The agent's analysed calls in a window, newest first.
+      parameters:
+        - { $ref: '#/components/parameters/AgentId' }
+        - { name: from, in: query, required: false, description: 'Default: 30 days before `to`.', schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, description: 'Default: now.', schema: { type: string, format: date-time } }
+        - { name: limit, in: query, required: false, description: 'Clamped to 1–200.', schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [sessionId, createdAt, sentiment, disposition, score, summary, hallucinationCount]
+                      properties:
+                        sessionId: { type: string, format: uuid }
+                        createdAt: { type: string, format: date-time }
+                        sentiment: { type: string, nullable: true }
+                        disposition: { type: string, nullable: true }
+                        score: { type: integer, nullable: true }
+                        summary: { type: string, nullable: true }
+                        hallucinationCount: { type: integer }
+        '400': { $ref: '#/components/responses/BadBody' }
+
+  /api/agents/{id}/analysis/memory:
+    get:
+      operationId: listCallerMemory
+      summary: What the org's agents remember about callers (at most 200, most recently updated first).
+      description: Memory is kept per caller for the whole org, so the answer is the same for every agent id.
+      parameters: [{ $ref: '#/components/parameters/AgentId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { type: array, items: { $ref: '#/components/schemas/CallerMemory' } }
+    delete:
+      operationId: forgetCaller
+      summary: Erase what the org's agents remember about one caller.
+      description: >-
+        A permanent delete, org-wide like the list; `removed` is false when nothing matched. Needs
+        an owner, admin or developer key.
+      parameters:
+        - { $ref: '#/components/parameters/AgentId' }
+        - { name: caller, in: query, required: true, description: 'The caller as stored (`callerKey`) or a phone number.', schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [removed]
+                    properties:
+                      removed: { type: boolean }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/agents/preflight:
+    post:
+      operationId: preflightVoiceStack
+      summary: Check that the speech-to-text, text-to-speech and LLM providers answer with the keys a call would use.
+      description: >-
+        With only `agentId`: checks the agent's saved stack and records the verdicts (see
+        getKeyHealth). With provider fields: checks those (with `agentId`, a masked key is taken
+        from that agent for the same provider; without it, a masked key is refused). Opens a real
+        connection to each provider (the LLM check spends a few tokens); each check waits at most
+        8 s. Throttled per org (429 with `retryAfter`). Needs an owner, admin or developer key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agentId: { type: string, format: uuid }
+                sttProvider: { type: string }
+                sttConfig: { type: object, additionalProperties: true }
+                ttsProvider: { type: string }
+                ttsVoice: { type: string }
+                ttsConfig: { type: object, additionalProperties: true }
+                llmProvider: { type: string }
+                llmModel: { type: string }
+                llmConfig: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: One report per component that names a provider (stt, tts, llm, in that order).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [reports, persisted, analysisModel]
+                    properties:
+                      reports: { type: array, items: { $ref: '#/components/schemas/PreflightReport' } }
+                      persisted: { type: boolean }
+                      analysisModel: { allOf: [{ $ref: '#/components/schemas/ModelCheck' }], nullable: true, description: "The agent's post-call analysis model, checked too (agentId-only, when it names one)." }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/agents/analysis-model-check:
+    post:
+      operationId: checkAnalysisModel
+      summary: Whether a model can run post-call analysis — tried once with a sample call, the verdict cached.
+      description: >-
+        An unusable input (provider not openai, anthropic, groq or openrouter; empty or malformed
+        model) answers 200 with `ok` false and the reason. A new check runs on Telenow's key and is
+        throttled per org (429 with `retryAfter`). Needs an owner, admin or developer key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                provider: { type: string }
+                model: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/ModelCheck' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/agents/key-health:
+    get:
+      operationId: getKeyHealth
+      summary: The last verdict on each agent's provider keys (failing first), from preflight checks and the background sweep.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [rows]
+                    properties:
+                      rows:
+                        type: array
+                        items:
+                          type: object
+                          required: [agentId, agentName, component, provider, keySource, ok, attribution, error, checkedAt]
+                          properties:
+                            agentId: { type: string, format: uuid }
+                            agentName: { type: string }
+                            component: { type: string, enum: [stt, tts, llm, analysis] }
+                            provider: { type: string }
+                            keySource: { type: string, enum: [byok, platform] }
+                            ok: { type: boolean }
+                            attribution: { type: string, nullable: true, enum: [customer_account, customer_config, provider_outage, platform, unknown] }
+                            error: { type: string, nullable: true }
+                            checkedAt: { type: string, format: date-time }
+
+  /api/agents/provider-health:
+    get:
+      operationId: getProviderHealth
+      summary: Provider failures on the org's recent calls, grouped by component, provider, key and cause.
+      parameters:
+        - { name: minutes, in: query, required: false, description: 'The window; clamped to 1–1440.', schema: { type: integer, minimum: 1, maximum: 1440, default: 60 } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [windowMinutes, callsAffected, groups]
+                    properties:
+                      windowMinutes: { type: integer }
+                      callsAffected: { type: integer }
+                      groups:
+                        type: array
+                        items:
+                          type: object
+                          required: [component, provider, keySource, attribution, calls, incidents, lastAt, lastError, agentIds, agentNames]
+                          properties:
+                            component: { type: string }
+                            provider: { type: string }
+                            keySource: { type: string }
+                            attribution: { type: string }
+                            calls: { type: integer }
+                            incidents: { type: integer }
+                            lastAt: { type: string, format: date-time }
+                            lastError: { type: string, nullable: true }
+                            agentIds: { type: array, items: { type: string, format: uuid } }
+                            agentNames: { type: array, items: { type: string } }
+        '400': { $ref: '#/components/responses/BadBody' }
+
+  /api/agents/live-calls:
+    get:
+      operationId: countLiveCalls
+      summary: Calls in progress right now, per agent.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [counts, total]
+                    properties:
+                      counts: { type: object, additionalProperties: { type: integer }, description: 'Agent id → calls in progress; an agent with none is absent.' }
+                      total: { type: integer }
+
+  /api/agents/flow/validate:
+    post:
+      operationId: validateFlow
+      summary: Check a flow graph exactly as calls will, before saving it (a graph that fails here makes the agent run single-context).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [flow]
+              properties:
+                flow: { type: object, additionalProperties: true, description: "The graph, as `metadata.flow` holds it." }
+                variables: { type: array, items: { type: object, additionalProperties: true }, description: "The agent's variables ({name, required, default, …})." }
+      responses:
+        '200':
+          description: The verdict (not an error when the graph is invalid).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [valid, errors, warnings, multiContext]
+                    properties:
+                      valid: { type: boolean }
+                      errors: { type: array, items: { type: string } }
+                      warnings:
+                        type: array
+                        items:
+                          type: object
+                          required: [code, at, message]
+                          properties:
+                            code: { type: string }
+                            at: { type: string }
+                            message: { type: string }
+                      multiContext: { type: boolean }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/agents/prompt/validate:
+    post:
+      operationId: validatePrompt
+      summary: Check a prompt's conditional sections and lint it; given sample values, render it as a call would get it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt: { type: string, maxLength: 12000 }
+                kind: { type: string, enum: [single, flowBase], default: single, description: "`flowBase`: a flow's base prompt." }
+                greeting: { type: string, maxLength: 12000 }
+                variables: { type: array, items: { type: object, additionalProperties: true } }
+                values: { type: object, additionalProperties: true, description: 'Sample values; when sent (even {}), the answer carries `rendered` and `decisions`.' }
+                tools: { type: array, items: { type: string } }
+                writtenBySteps: { type: array, items: { type: string } }
+                channel: { type: string, enum: [web, phone_inbound, phone_outbound, whatsapp, instagram, chat] }
+      responses:
+        '200':
+          description: The verdict (not an error when the prompt has findings).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [valid, errors, warnings]
+                    properties:
+                      valid: { type: boolean }
+                      errors: { type: array, items: { $ref: '#/components/schemas/PromptFinding' } }
+                      warnings: { type: array, items: { $ref: '#/components/schemas/PromptFinding' } }
+                      rendered: { type: string, description: 'Only when `values` was sent.' }
+                      decisions:
+                        type: array
+                        description: 'Only when `values` was sent: which branch each conditional section took.'
+                        items:
+                          type: object
+                          required: [section, line, branch, branches]
+                          properties:
+                            section: { type: integer }
+                            line: { type: integer }
+                            branch: { type: integer, nullable: true }
+                            branches: { type: integer }
+        '400': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/agent-defaults:
+    get:
+      operationId: getAgentDefaults
+      summary: The provider stack a new agent should start from for a country (the org's own, else Telenow's).
+      parameters:
+        - { name: country, in: query, required: false, description: "Two letters (ISO 3166-1); anything else is ignored and the org's country is used.", schema: { type: string } }
+      responses:
+        '200':
+          description: OK. An empty string means no recommendation for that field.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [llmProvider, llmModel, sttProvider, sttConfig, ttsProvider, ttsVoice, ttsConfig, country, countrySource, source, demoted, enabled]
+                    properties:
+                      llmProvider: { type: string }
+                      llmModel: { type: string }
+                      sttProvider: { type: string }
+                      sttConfig: { type: object, additionalProperties: true }
+                      ttsProvider: { type: string }
+                      ttsVoice: { type: string }
+                      ttsConfig: { type: object, additionalProperties: true }
+                      country: { type: string, nullable: true }
+                      countrySource: { type: string, enum: [explicit, org.country, org.timezone, unknown] }
+                      source: { type: string, enum: [org, platform, any, none] }
+                      demoted: { type: array, items: { type: string }, description: 'Why a recommended provider was dropped (e.g. not configured here).' }
+                      enabled: { type: boolean }
+
+  # ── An agent's knowledge bases (where the deployment has the knowledge module). The path's
+  #    orgId must be the key's org. Writes need an owner, admin or developer key, created by an
+  #    owner, admin or developer of the org. Keys here are snake_case, as the knowledge routes'. ──
+  /api/orgs/{orgId}/agents/{agentId}/knowledge-bases:
+    get:
+      operationId: listAgentKnowledgeBases
+      summary: The knowledge bases the agent answers from, each with the documents it is limited to.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/AgentIdInOrg' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [knowledgeBases, total]
+                    properties:
+                      knowledgeBases: { type: array, items: { $ref: '#/components/schemas/AgentKnowledgeBase' } }
+                      total: { type: integer }
+        '403': { $ref: '#/components/responses/Error' }
+    put:
+      operationId: setAgentKnowledgeBases
+      summary: Replace the agent's whole set of knowledge bases in one step ([] detaches them all).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/AgentIdInOrg' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [knowledgeBases]
+              properties:
+                knowledgeBases:
+                  type: array
+                  items:
+                    type: object
+                    required: [kbId]
+                    properties:
+                      kbId: { type: string, format: uuid }
+                      documentIds: { type: array, items: { type: string, format: uuid }, nullable: true, description: 'Limit the agent to these documents; omitted or null = the whole base.' }
+      responses:
+        '200': { $ref: '#/components/responses/Done' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+
+  /api/orgs/{orgId}/agents/{agentId}/knowledge-bases/{kbId}:
+    post:
+      operationId: attachAgentKnowledgeBase
+      summary: Attach one knowledge base to the agent (again, to change its document limit).
+      description: >-
+        Without `documentIds`, a new attachment covers the whole base and an existing one keeps its
+        limit. An empty `documentIds` is refused (omit it to attach the whole base). 409 when the
+        base belongs to a different client than the agent.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/AgentIdInOrg' }, { $ref: '#/components/parameters/KbId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                documentIds: { type: array, minItems: 1, items: { type: string, format: uuid } }
+      responses:
+        '200': { $ref: '#/components/responses/Done' }
+        '400': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    delete:
+      operationId: detachAgentKnowledgeBase
+      summary: Detach a knowledge base from the agent (200 whether or not it was attached).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/AgentIdInOrg' }, { $ref: '#/components/parameters/KbId' }]
+      responses:
+        '200': { $ref: '#/components/responses/Done' }
+        '403': { $ref: '#/components/responses/Error' }
 
   # ------------------------------------------------------------------
   # /api/v1 — key-authed integration surface (Zapier / Make / n8n /
@@ -1132,6 +1962,28 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    AgentIdInOrg:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AgentVersionNumber:
+      name: version
+      in: path
+      required: true
+      description: A version number from listAgentVersions.
+      schema: { type: integer, minimum: 1 }
+    KbId:
+      name: kbId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AgentView:
+      name: view
+      in: query
+      required: false
+      description: '`edit` returns provider keys in plaintext — honoured only for an owner or admin key; others get them masked.'
+      schema: { type: string, enum: [edit] }
   responses:
     Error:
       description: Error
@@ -1139,9 +1991,31 @@ components:
         application/json:
           schema:
             type: object
+            required: [success, error]
+            additionalProperties: true
+            description: >-
+              Some errors add a machine-readable `code` (e.g. `provider_error` on a 502,
+              `agent_version_conflict` on a 409) and details beside it (`currentVersion`, `path`).
             properties:
               success: { type: boolean, example: false }
               error: { type: string }
+              code: { type: string }
+              retryAfter: { type: integer, description: 'On a 429: seconds to wait (also the Retry-After header).' }
+    Done:
+      description: Done.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, message]
+            properties:
+              success: { type: boolean, example: true }
+              message: { type: string }
+    BadBody:
+      description: The request does not match the documented shape (a missing or mistyped field, a bad query or path value). Plain text.
+      content:
+        text/plain:
+          schema: { type: string }
   schemas:
     SpendState:
       type: object
@@ -1558,3 +2432,190 @@ components:
         sttProvider: { type: string }
         ttsProvider: { type: string }
         ttsVoice: { type: string }
+    AgentRecord:
+      type: object
+      description: >-
+        An agent as stored. Keys are snake_case and always present. Provider keys inside the
+        `*_config` objects come masked, unless an owner or admin key asks with `view=edit`.
+      required: [id, user_id, org_id, name, description, system_prompt, is_active, is_public, llm_provider, llm_model, llm_config, stt_provider, stt_config, tts_provider, tts_voice, tts_config, s2s_config, fallback_config, telephony_provider, telephony_config, session_config, total_sessions, total_messages, total_duration, tags, metadata, created_at, updated_at, deleted_at, partner_client_id]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid, description: "Who created it (for an agent made with a key, the key's creator)." }
+        org_id: { type: string, format: uuid, nullable: true }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        system_prompt: { type: string, nullable: true }
+        is_active: { type: boolean }
+        is_public: { type: boolean }
+        llm_provider: { type: string }
+        llm_model: { type: string }
+        llm_config: { type: object, additionalProperties: true, nullable: true }
+        stt_provider: { type: string }
+        stt_config: { type: object, additionalProperties: true, nullable: true }
+        tts_provider: { type: string }
+        tts_voice: { type: string }
+        tts_config: { type: object, additionalProperties: true, nullable: true }
+        s2s_config: { type: object, additionalProperties: true, nullable: true }
+        fallback_config: { type: object, additionalProperties: true, nullable: true }
+        telephony_provider: { type: string, nullable: true }
+        telephony_config: { type: object, additionalProperties: true, nullable: true }
+        session_config: { type: object, additionalProperties: true }
+        total_sessions: { type: integer }
+        total_messages: { type: integer }
+        total_duration: { type: integer, description: Seconds. }
+        tags: { nullable: true, description: 'As saved.' }
+        metadata: { type: object, additionalProperties: true, nullable: true, description: 'The flow graph (`flow`), languages, logo key and other builder settings.' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+        partner_client_id: { type: string, format: uuid, nullable: true }
+    AgentStats:
+      type: object
+      required: [totalSessions, totalMessages, totalDuration, avgSessionDuration, avgMessagesPerSession, avgServerMs, avgSttMs, avgLlmMs, avgTtsMs, avgNetRttMs, avgFlowMs, latencySamples]
+      properties:
+        totalSessions: { type: integer }
+        totalMessages: { type: integer }
+        totalDuration: { type: integer, description: Seconds. }
+        avgSessionDuration: { type: number }
+        avgMessagesPerSession: { type: number }
+        avgServerMs: { type: integer, nullable: true }
+        avgSttMs: { type: integer, nullable: true }
+        avgLlmMs: { type: integer, nullable: true }
+        avgTtsMs: { type: integer, nullable: true }
+        avgNetRttMs: { type: integer, nullable: true }
+        avgFlowMs: { type: integer, nullable: true }
+        latencySamples: { type: integer }
+    AgentVersion:
+      type: object
+      required: [version, note, createdAt, name, llmModel, ttsVoice, savedByEmail]
+      properties:
+        version: { type: integer }
+        note: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        name: { type: string, nullable: true }
+        llmModel: { type: string, nullable: true }
+        ttsVoice: { type: string, nullable: true }
+        savedByEmail: { type: string, nullable: true }
+    AgentVersionPerf:
+      type: object
+      required: [calls, avgDurationSec, avgRespMs, avgSttMs, avgLlmMs, avgTtsMs, answeredRate, avgScore, sentimentPositive, sentimentNeutral, sentimentNegative, totalChargeUsd, fromTs, toTs]
+      properties:
+        calls: { type: integer }
+        avgDurationSec: { type: number, nullable: true }
+        avgRespMs: { type: number, nullable: true }
+        avgSttMs: { type: number, nullable: true }
+        avgLlmMs: { type: number, nullable: true }
+        avgTtsMs: { type: number, nullable: true }
+        answeredRate: { type: number, nullable: true }
+        avgScore: { type: number, nullable: true }
+        sentimentPositive: { type: integer }
+        sentimentNeutral: { type: integer }
+        sentimentNegative: { type: integer }
+        totalChargeUsd: { type: number }
+        fromTs: { type: string, format: date-time }
+        toTs: { type: string, format: date-time }
+    AgentAnalytics:
+      type: object
+      required: [total, avgScore, hallucinationCalls, positive, neutral, negative, agentWords, customerWords, sentimentTrend, dispositionBreakdown, topObjections, topTopics, topKeywords]
+      properties:
+        total: { type: integer }
+        avgScore: { type: number, nullable: true }
+        hallucinationCalls: { type: integer }
+        positive: { type: integer }
+        neutral: { type: integer }
+        negative: { type: integer }
+        agentWords: { type: integer }
+        customerWords: { type: integer }
+        sentimentTrend:
+          type: array
+          items:
+            type: object
+            required: [day, positive, neutral, negative]
+            properties:
+              day: { type: string, format: date }
+              positive: { type: integer }
+              neutral: { type: integer }
+              negative: { type: integer }
+        dispositionBreakdown:
+          type: array
+          items:
+            type: object
+            required: [disposition, count]
+            properties:
+              disposition: { type: string, description: '"(none)" for calls with no disposition.' }
+              count: { type: integer }
+        topObjections:
+          type: array
+          maxItems: 15
+          items:
+            type: object
+            required: [objection, count]
+            properties:
+              objection: { type: string }
+              count: { type: integer }
+        topTopics: { type: array, maxItems: 30, items: { $ref: '#/components/schemas/TagCount' } }
+        topKeywords: { type: array, maxItems: 40, items: { $ref: '#/components/schemas/TagCount' } }
+    TagCount:
+      type: object
+      required: [tag, count]
+      properties:
+        tag: { type: string }
+        count: { type: integer }
+    CallerMemory:
+      type: object
+      required: [orgId, callerKey, summary, facts, callCount, lastSession, updatedAt, expiresAt]
+      properties:
+        orgId: { type: string, format: uuid }
+        callerKey: { type: string }
+        summary: { type: string, nullable: true }
+        facts: { description: 'What the agents learned (as extracted), usually an object.' }
+        callCount: { type: integer }
+        lastSession: { type: string, format: uuid, nullable: true }
+        updatedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time, nullable: true, description: 'Listed even when past; it is removed on the next sweep.' }
+    PreflightReport:
+      type: object
+      required: [component, provider, keySource, status]
+      properties:
+        component: { type: string, enum: [stt, tts, llm] }
+        provider: { type: string }
+        keySource: { type: string, enum: [byok, platform] }
+        status: { type: string, enum: [ok, failed, skipped] }
+        attribution: { type: string, enum: [customer_account, customer_config, provider_outage, platform, unknown], description: 'Whose problem a failure is.' }
+        error: { type: string }
+        advice: { type: string }
+    ModelCheck:
+      type: object
+      required: [ok, reason, checkedAt, cached]
+      properties:
+        ok: { type: boolean }
+        reason: { type: string, nullable: true }
+        checkedAt: { type: string, format: date-time }
+        cached: { type: boolean }
+    PromptFinding:
+      type: object
+      required: [field, code, line, column, message]
+      properties:
+        field: { type: string, enum: [prompt, greeting] }
+        code: { type: string }
+        line: { type: integer }
+        column: { type: integer }
+        message: { type: string }
+    AgentKnowledgeBase:
+      type: object
+      required: [id, org_id, name, description, embedding_model, created_by, app_id, app_kb_key, created_at, updated_at, deleted_at, document_count, partner_client_id, document_ids]
+      properties:
+        id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        embedding_model: { type: string }
+        created_by: { type: string, format: uuid, nullable: true }
+        app_id: { type: string, nullable: true }
+        app_kb_key: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true }
+        document_count: { type: integer, nullable: true }
+        partner_client_id: { type: string, format: uuid, nullable: true }
+        document_ids: { type: array, items: { type: string, format: uuid }, nullable: true, description: 'The documents the agent is limited to; null = the whole base.' }
