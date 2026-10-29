@@ -1,11 +1,18 @@
 openapi: 3.0.3
 info:
   title: Telenow Voice API
-  version: 0.1.1
+  version: 0.2.0
   description: >
     Control-plane API for the Telenow Voice SDK. Generate backend clients in any
     language from this spec (see README). Audio is carried over a separate
     WebSocket (`/ws/web-agent`), not described here.
+
+
+    Every operation here is a stable surface: removing one, renaming a field, or making an
+    optional request field required is a breaking change and comes with a new major version.
+    The backend's tests hold this document to the routes: every operation is served, and
+    every route an org API key reaches is described here or listed, with its reason, in
+    `src/features/api_surface/undocumented.tsv`.
 servers:
   - url: https://api.telenow.ai
     description: Production
@@ -946,6 +953,147 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
 
+  # ── Billing, by an owner/admin org API key (the key's own role is checked; a developer or
+  #    viewer key gets 403). Paying, topping up and promotions stay in the dashboard. ──
+  /api/orgs/{orgId}/billing/summary:
+    get:
+      operationId: getBillingSummary
+      summary: The account's mode, balance, cap and this month's spend, and whether Telenow lets it spend right now.
+      description: >-
+        `spendState` is the same check a new call meets. Read with a sub-account's own key, the
+        wallet fields are empty and `spendState` is null: the wallet is its parent's.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/BillingSummary' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/billing/spend-alert:
+    put:
+      operationId: setSpendAlert
+      summary: Set or clear the low-balance threshold that turns spendState to `low`.
+      description: >-
+        The state is `low` while `headroomUsd` is at or below the threshold. Telenow sets none of
+        its own. A top-level account only (a sub-account gets 403). Answers with the spend state it
+        gives now.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [thresholdUsd]
+              properties:
+                thresholdUsd: { type: number, minimum: 0, nullable: true, description: 'USD; null clears it.' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/SpendState' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/billing/ledger:
+    get:
+      operationId: listLedger
+      summary: Ledger entries — a page (newest first), or with updatedAfter / cursor every entry after a point (oldest first).
+      description: >-
+        Entries are never changed or removed (a correction is a new entry), so a stored
+        `nextCursor` never misses or repeats one. With a sub-account's key: the entries it caused
+        (calls, number setup and rent), `balanceAfterUsd` null; its `charge` entries for a month
+        add up to that month's usage `spendUsd`.
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, required: false, description: 'Page mode only.', schema: { type: integer, minimum: 0, default: 0 } }
+        - { name: updatedAfter, in: query, required: false, description: 'Feed mode: entries created after this instant (exclusive).', schema: { type: string, format: date-time } }
+        - { name: cursor, in: query, required: false, description: "Feed mode: a nextCursor this route returned. Not with updatedAfter.", schema: { type: string } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/LedgerPage' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/billing/breakdown:
+    get:
+      operationId: getChargeBreakdown
+      summary: Settled charges by agent and call type, with each component, for a window (default — this billing month).
+      security: [{ ApiKeyAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/OrgId' }
+        - { name: from, in: query, required: false, schema: { type: string, format: date-time } }
+        - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    properties:
+                      from: { type: string, format: date-time }
+                      to: { type: string, format: date-time }
+                      rows: { type: array, items: { type: object, additionalProperties: true } }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/billing/invoices:
+    get:
+      operationId: listInvoices
+      summary: The account's invoices (postpaid), each with its lines.
+      security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        invoice: { type: object, additionalProperties: true }
+                        lines: { type: array, items: { type: object, additionalProperties: true } }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -957,6 +1105,12 @@ components:
       scheme: bearer
       description: Ephemeral client token (or user JWT).
   parameters:
+    OrgId:
+      name: orgId
+      in: path
+      required: true
+      description: Your organization's id — the one the key belongs to (a key for another org gets 403).
+      schema: { type: string, format: uuid }
     SubAccountId:
       name: id
       in: path
@@ -989,6 +1143,58 @@ components:
               success: { type: boolean, example: false }
               error: { type: string }
   schemas:
+    SpendState:
+      type: object
+      description: >-
+        Whether Telenow lets the account spend right now (the check a new call meets), why not, and
+        how much it can still spend. Prepaid or postpaid is the account's own setting. Money is USD,
+        as decimal strings.
+      properties:
+        state: { type: string, enum: [ok, low, stopped] }
+        canSpend: { type: boolean }
+        stoppedBy: { type: string, enum: [suspended, out_of_credit, spend_cap], nullable: true }
+        mode: { type: string, enum: [prepaid, postpaid] }
+        balanceUsd: { type: string, example: '18.40', description: 'A postpaid balance runs below zero until its invoice.' }
+        periodStart: { type: string, format: date-time, description: 'The billing month the cap is measured over (India time).' }
+        periodSpendUsd: { type: string }
+        monthlySpendLimitUsd: { type: string, nullable: true }
+        headroomUsd: { type: string, nullable: true, description: 'What can still be spent before Telenow stops the account; null for postpaid with no cap.' }
+        lowThresholdUsd: { type: string, nullable: true }
+    BillingSummary:
+      type: object
+      description: The Billing page's data, loosely typed here; `spendState` is the part integrations build on.
+      additionalProperties: true
+      properties:
+        account: { type: object, additionalProperties: true }
+        billedToParent: { type: boolean }
+        periodStart: { type: string, format: date-time }
+        payableUsd: { type: string }
+        spendState: { allOf: [{ $ref: '#/components/schemas/SpendState' }], nullable: true }
+    LedgerEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        entryType: { type: string, example: charge, description: 'charge | payment | adjustment | promo' }
+        amountUsd: { type: string, description: 'Signed: charges negative, payments and credits positive.' }
+        balanceAfterUsd: { type: string, nullable: true, description: "null when read with a sub-account's key." }
+        refKind: { type: string, nullable: true, description: 'What it settles: session, rental (number rent), number_setup, invoice, manual, …' }
+        refId: { type: string, nullable: true }
+        fxCurrency: { type: string, nullable: true }
+        fxRate: { type: string, nullable: true }
+        fxAmount: { type: string, nullable: true }
+        note: { type: string, nullable: true }
+        createdBy: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        sourceOrgId: { type: string, format: uuid, nullable: true, description: "The sub-account that caused it, in a parent's ledger." }
+    LedgerPage:
+      type: object
+      description: 'Page mode: entries, total, limit, offset. Feed mode: entries, nextCursor, limit.'
+      properties:
+        entries: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        nextCursor: { type: string, description: 'Feed mode: send it back as cursor.' }
     SubAccountLimits:
       type: object
       description: 'Each field - null = no limit, 0 = stopped. In a create/update, an absent field is unchanged (create - no limit).'

@@ -6,6 +6,14 @@ the long tail (Kotlin/JVM, Go, Ruby, PHP, C#, …) without hand-writing each SDK
 (The ergonomic Node and Python clients are hand-written in `../server-node` and
 `../server-python`; everything else is generated.)
 
+> **Where it is written.** Since 2026-10-29 the source of truth is the backend's
+> `voice_ai_rust/openapi/openapi.yaml`: its tests hold the document to the routes (every
+> documented operation is served; every route an org API key reaches is documented or listed
+> with a reason), so a route and its description change in one commit. This file is the
+> published copy. Do not edit it here: edit the backend's, then run
+> `openapi/refresh_from_backend.sh` (`--check` fails when the copy is stale — use it before a
+> release).
+
 ## Generate
 
 Using [`openapi-generator`](https://openapi-generator.tech) (no install — via npx):
