@@ -3914,10 +3914,11 @@ paths:
                         type: array
                         items:
                           type: object
-                          required: [name, required]
+                          required: [name, required, filledByLookup]
                           properties:
                             name: { type: string }
-                            required: { type: boolean }
+                            required: { type: boolean, description: 'The call list must carry it. False for one a pre-call lookup fills.' }
+                            filledByLookup: { type: boolean, description: "A pre-call lookup fills it from the agent's connected CRM before each dial, so the call list need not carry it." }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
