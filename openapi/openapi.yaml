@@ -27,6 +27,11 @@ paths:
     post:
       operationId: createClientToken
       summary: Mint a short-lived, scoped client token for a browser/app.
+      description: >
+        Called by your backend; the token starts calls with exactly this agent and these variables, and expires.
+        Redeem it at `POST /api/sessions/init-web-call` with `Authorization: Bearer <token>`. A viewer key gets 403
+        (minting is a write), and so does an agent of another organization; an unknown agent is 404. A body that
+        is not JSON is 400 and one missing `agentId` (or with a mistyped field) is 422, both plain text.
       security: [{ ApiKeyAuth: [] }]
       requestBody:
         required: true
@@ -35,19 +40,28 @@ paths:
             schema: { $ref: '#/components/schemas/ClientTokenRequest' }
       responses:
         '200':
-          description: Token minted
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/Envelope'
-                  - properties: { data: { $ref: '#/components/schemas/ClientToken' } }
+          description: Token minted. Flat — no `success` / `data` wrapper.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ClientToken' } } }
+        '400': { $ref: '#/components/responses/BadBody' }
         '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
 
   /api/sessions/initiate-call:
     post:
       operationId: initiateCall
       summary: Place an outbound PSTN call.
+      description: >
+        The agent must be yours (another organization's is 403, an unknown one 404). The number is
+        checked against your do-not-call list and consent rules first (403). The caller id is
+        `fromNumber`/`fromNumberId` (not both, 400) or the agent's own number — an agent with
+        neither is 400. Then the account must be able to spend (403 when suspended or out of
+        credit, 429 at a concurrency cap — only on the synchronous path: `queue: true` answers 202
+        instead). A carrier that refuses the dial is 400 or 502. A draining server is 409 (retry).
+        The queue is per agent AND dial policy (caller id, machine detection, attempts, backoff,
+        retry on no answer): the same number queued again with the same policy is `deduplicated`;
+        with another policy it joins another queue.
       security: [{ ApiKeyAuth: [] }]
       requestBody:
         required: true
@@ -55,7 +69,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/InitiateCallRequest' }
       responses:
-        '200':
+        '201':
           description: Call started
           content:
             application/json:
@@ -70,11 +84,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/QueuedCallResult' }
-        '400': { $ref: '#/components/responses/Error' }
-        '429':
-          description: >
-            Concurrency cap full. Only on the synchronous path — `queue: true`
-            returns 202 instead of refusing.
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
 
   /api/sessions/{id}/context:
     post:
@@ -111,26 +128,35 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
                 properties:
                   success: { type: boolean }
                   data:
                     type: object
+                    required: [noteId, key, delivery]
                     properties:
                       noteId: { type: string, format: uuid }
                       key: { type: string, nullable: true }
                       delivery: { type: string, enum: [next_turn, held, speaking_now] }
         '400':
           description: '`empty` (no text), `invalid_respond` (neither `none` nor `when_idle`), or a body that is not the JSON above.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '401': { $ref: '#/components/responses/Error' }
         '404':
           description: No such call in your organization (another organization's call answers the same).
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '409':
           description: '`not_live` (the call has ended, or has not started), `no_agent` (a person has the call for good — a manual call, a takeover, a transfer that went through) or `engine_unsupported` (a Custom API agent, or a Gemini Live model other than 3.8 Live and 3.1 Flash Live).'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '413':
-          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters (Unicode code points) fit right now, beside the notes the call already holds.'
+          description: '`too_large` — the body carries `maxChars`, how many of this note''s characters (Unicode code points) fit right now, beside the notes the call already holds. The room is the agent model''s own context, so it differs by model.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '429':
           description: Over the API's rate limit.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '503':
           description: '`owner_unknown` (the call''s server has not registered it yet) or `owner_unreachable` (it did not answer in time). Retry after `Retry-After` seconds.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
 
   /api/sessions/{id}/activity:
     post:
@@ -149,25 +175,37 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
                 properties:
                   success: { type: boolean }
                   data:
                     type: object
+                    required: [nextCheckinInMs]
                     properties:
                       nextCheckinInMs: { type: integer, nullable: true }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404':
           description: No such call in your organization.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '409':
           description: '`not_live` (ended or not started) or `no_agent`.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '429':
           description: Over the API's rate limit.
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
         '503':
           description: '`owner_unknown` or `owner_unreachable` — retry after `Retry-After` seconds.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
 
   /api/sessions/{id}/transfer:
     post:
       operationId: transferCall
       summary: Warm-transfer a live call to a phone number.
+      description: >
+        The call must be live (ended is 400); `to` is checked against your do-not-call list and
+        consent rules (403). A transfer the call cannot make (not live on this server, a call type
+        that cannot transfer, a carrier refusal) is 502.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       requestBody:
@@ -179,8 +217,28 @@ paths:
               required: [to]
               properties: { to: { type: string, example: '+15551234567' } }
       responses:
-        '200': { description: Transferred }
-        '400': { $ref: '#/components/responses/Error' }
+        '200':
+          description: Transferred
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [sessionId, to, status]
+                    properties:
+                      sessionId: { type: string, format: uuid }
+                      to: { type: string }
+                      status: { type: string, example: transferred }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '502': { $ref: '#/components/responses/Error' }
 
   /api/sessions/{id}/play:
     post:
@@ -196,7 +254,8 @@ paths:
         Returns as soon as playback is QUEUED, with the recording's duration — a
         five-minute track would otherwise hold the request open for five
         minutes. Playing again supersedes whatever is currently playing. The
-        session must still be active.
+        session must still be active (an ended one is 400). A url the server cannot fetch or a
+        track it cannot load is 400.
 
 
         Works on an agent call and on a **manual (softphone)** call alike. With
@@ -231,26 +290,36 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [success, data]
                 properties:
                   success: { type: boolean }
                   data:
                     type: object
+                    required: [sessionId, trackId, url, durationMs]
                     properties:
                       sessionId: { type: string, format: uuid }
                       trackId: { type: string, format: uuid, nullable: true }
                       url: { type: string, nullable: true }
                       durationMs: { type: integer, example: 8400 }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
 
   /api/sessions/{id}:
     delete:
       operationId: endSession
       summary: End a session (hang up). API key or user JWT.
+      description: >
+        Ends a call this server holds. Ending it again is 200 while the server still holds it (15
+        minutes after the end); a call no server holds — an unknown id, another organization's, or
+        a stored one long over — is 404.
       security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       responses:
-        '200': { description: Ended }
+        '200': { $ref: '#/components/responses/Done' }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/sessions/init-web-call:
@@ -267,6 +336,11 @@ paths:
         the agent's (agent mode) or human's (manual mode) audio leg. Recordings
         and webhooks (`call.started`, `call.ended`, `recording.ready`) fire in
         both modes. Authorize with a client token (Bearer) or API key.
+        Agent mode needs `agentId` (400) of one of your agents (another organization's is 403, an
+        unknown one 404). A client token cannot start a manual call (403). The account must be able
+        to spend (403), a browser-call slot must be free (429); a provider that cannot be set up
+        is 502. The session ends by itself if no client connects to `websocketUrl` within 60
+        seconds.
       security: [{ BearerAuth: [] }, { ApiKeyAuth: [] }]
       requestBody:
         content:
@@ -314,11 +388,24 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/SessionInfo' } }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
 
   /api/public/widget/{slug}/session:
     post:
       operationId: createPublicWidgetSession
       summary: Start an anonymous public-widget session (no auth).
+      description: >
+        For an agent published as a public widget. An unknown or unpublished slug is 404; a wrong
+        `accessCode`, or an `Origin` the widget does not allow, is 403. Ten sessions a minute per
+        widget and client address; past that, 400 "Too many attempts". `lead` keeps at most 20
+        fields (keys cut to 64 characters, values to 500) — more are dropped, not refused.
       security: []
       parameters:
         - name: slug
@@ -343,6 +430,12 @@ paths:
                 allOf:
                   - $ref: '#/components/schemas/Envelope'
                   - properties: { data: { $ref: '#/components/schemas/SessionInfo' } }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
 
   # ── Agents, by an org API key (or a dashboard login with X-Org-Id). The key's org is the agent's
   #    org; another org's agent id answers 404. Writes need an owner, admin or developer key — a
@@ -407,6 +500,13 @@ paths:
   /api/agents/{id}:
     get:
       operationId: getAgent
+      summary: 'One agent (anyone may read a public agent, its secrets removed).'
+      description: >-
+        The key is optional here. With your key: one of your agents (provider keys masked unless an
+        owner or admin key asks for `view=edit`); another organization's agent is 403. With no key:
+        a PUBLIC agent is readable by anyone, its provider keys and tool secrets removed; a private
+        one is 403. An unknown id is 404 either way. A key that is not valid is read as no key.
+      security: [{ ApiKeyAuth: [] }, {}]
       parameters: [{ $ref: '#/components/parameters/AgentId' }, { $ref: '#/components/parameters/AgentView' }]
       responses:
         '200':
@@ -423,6 +523,7 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
     put:
       operationId: updateAgent
+      summary: 'Replace an agent''s configuration (a new version).'
       description: >-
         Needs an owner, admin or developer key. Every save appends a version (`version` in the
         answer; see listAgentVersions). Send `If-Match: "<version>"` to save only if the agent is
@@ -447,6 +548,7 @@ paths:
                   data: { $ref: '#/components/schemas/AgentRecord' }
                   version: { type: integer, nullable: true, description: 'The version this save made.' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -461,6 +563,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/AgentId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -481,6 +584,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/AgentStats' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/language-suggestion:
@@ -505,6 +609,7 @@ paths:
                       suggested: { type: array, items: { type: string }, description: 'Language keys, "code|Name": "hi-IN|Hindi".' }
                       fromVoiceLanguage: { type: string, nullable: true, description: "The voice's own language setting, if any." }
                       linesRead: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/voice-preview:
@@ -536,6 +641,7 @@ paths:
           content:
             audio/wav: { schema: { type: string, format: binary } }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
@@ -576,6 +682,7 @@ paths:
                       url: { type: string, description: 'A public URL of the stored image.' }
                       size: { type: integer, description: Bytes. }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -609,6 +716,7 @@ paths:
                             description: { type: string, nullable: true }
                             appId: { type: string, nullable: true }
                             spec: { type: object, additionalProperties: true, description: 'The tool as the agent runs it (name, description, parameters as JSON Schema, config).' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/versions:
@@ -631,6 +739,7 @@ paths:
                     required: [versions]
                     properties:
                       versions: { type: array, items: { $ref: '#/components/schemas/AgentVersion' } }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/versions/{version}/diff:
@@ -661,6 +770,7 @@ paths:
                             path: { type: string, description: 'A display label: "System prompt", "LLM config · temperature".' }
                             from: { type: string, nullable: true }
                             to: { type: string, nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/versions/{version}/perf:
@@ -684,6 +794,7 @@ paths:
                     properties:
                       current: { $ref: '#/components/schemas/AgentVersionPerf' }
                       previous: { allOf: [{ $ref: '#/components/schemas/AgentVersionPerf' }], nullable: true, description: 'Null for the first version.' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/versions/{version}/restore:
@@ -704,6 +815,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/AgentRecord' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -734,6 +846,7 @@ paths:
                       to: { type: string, format: date-time }
                       rollup: { $ref: '#/components/schemas/AgentAnalytics' }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/analysis/calls:
     get:
@@ -768,6 +881,7 @@ paths:
                         summary: { type: string, nullable: true }
                         hallucinationCount: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/agents/{id}/analysis/memory:
     get:
@@ -786,6 +900,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { type: array, items: { $ref: '#/components/schemas/CallerMemory' } }
+        '401': { $ref: '#/components/responses/Error' }
     delete:
       operationId: forgetCaller
       summary: Erase what the org's agents remember about one caller.
@@ -811,6 +926,7 @@ paths:
                     properties:
                       removed: { type: boolean }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/agents/preflight:
@@ -857,6 +973,7 @@ paths:
                       persisted: { type: boolean }
                       analysisModel: { allOf: [{ $ref: '#/components/schemas/ModelCheck' }], nullable: true, description: "The agent's post-call analysis model, checked too (agentId-only, when it names one)." }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -890,6 +1007,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/ModelCheck' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
         '429': { $ref: '#/components/responses/Error' }
@@ -927,6 +1045,7 @@ paths:
                             attribution: { type: string, nullable: true, enum: [customer_account, customer_config, provider_outage, platform, unknown] }
                             error: { type: string, nullable: true }
                             checkedAt: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/agents/provider-health:
     get:
@@ -967,6 +1086,7 @@ paths:
                             agentIds: { type: array, items: { type: string, format: uuid } }
                             agentNames: { type: array, items: { type: string } }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/agents/live-calls:
     get:
@@ -988,6 +1108,7 @@ paths:
                     properties:
                       counts: { type: object, additionalProperties: { type: integer }, description: 'Agent id → calls in progress; an agent with none is absent.' }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/agents/flow/validate:
     post:
@@ -1029,6 +1150,7 @@ paths:
                             at: { type: string }
                             message: { type: string }
                       multiContext: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
   /api/agents/prompt/validate:
@@ -1081,6 +1203,7 @@ paths:
                             branch: { type: integer, nullable: true }
                             branches: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
   /api/agent-defaults:
@@ -1115,6 +1238,7 @@ paths:
                       source: { type: string, enum: [org, platform, any, none] }
                       demoted: { type: array, items: { type: string }, description: 'Why a recommended provider was dropped (e.g. not configured here).' }
                       enabled: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
 
   # ── An agent's knowledge bases (where the deployment has the knowledge module). The path's
   #    orgId must be the key's org. Writes need an owner, admin or developer key, created by an
@@ -1140,6 +1264,7 @@ paths:
                     properties:
                       knowledgeBases: { type: array, items: { $ref: '#/components/schemas/AgentKnowledgeBase' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     put:
       operationId: setAgentKnowledgeBases
@@ -1164,6 +1289,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Done' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -1189,6 +1315,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Done' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -1198,6 +1325,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/AgentIdInOrg' }, { $ref: '#/components/parameters/KbId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ── Calls and recordings, by an org API key. The path's orgId must be the key's org. Writes need an
@@ -1280,6 +1408,7 @@ paths:
                             code: { type: string, enum: [invalid_session_ids, invalid_numbers] }
                             count: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/calls/{id}:
@@ -1298,6 +1427,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallDetail' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -1317,6 +1447,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { allOf: [{ $ref: '#/components/schemas/CallCharge' }], nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/calls/{id}/trace:
@@ -1352,6 +1483,7 @@ paths:
                       post_call_count: { type: integer, description: 'With a stored trace only.' }
                       max_events: { type: integer, description: 'With a stored trace only.' }
                       events: { type: array, items: { type: object, additionalProperties: true, description: 'A trace event ({type, seq, t_ms, …}) or a post-call event.' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -1375,6 +1507,7 @@ paths:
                     required: [comments]
                     properties:
                       comments: { type: array, items: { $ref: '#/components/schemas/CallComment' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: addCallComment
@@ -1401,6 +1534,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallComment' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -1425,6 +1559,7 @@ paths:
                     required: [followups]
                     properties:
                       followups: { type: array, items: { $ref: '#/components/schemas/CallFollowup' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: addCallFollowup
@@ -1452,6 +1587,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallFollowup' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -1488,6 +1624,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallFollowup' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -1508,6 +1645,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallInsights' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     post:
@@ -1529,6 +1667,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallInsights' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -1565,6 +1704,7 @@ paths:
                       id: { type: string, format: uuid }
                       wrapupDisposition: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -1584,6 +1724,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LiveTicketAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -1600,6 +1741,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LiveTicketAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -1637,6 +1779,7 @@ paths:
                       maxRows: { type: integer }
                       maxRowsWide: { type: integer }
                       channels: { type: array, items: { $ref: '#/components/schemas/CallChannel' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/calls/export:
@@ -1676,6 +1819,7 @@ paths:
           content:
             text/csv: { schema: { type: string } }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
 
@@ -1711,6 +1855,7 @@ paths:
                       total: { type: integer, description: 'Rows in this answer.' }
                       nextCursor: { type: string, nullable: true, description: 'Paged only: null on the last page.' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/recordings/upload:
@@ -1749,6 +1894,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/Recording' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
@@ -1756,6 +1902,7 @@ paths:
   /api/orgs/{orgId}/recordings/{id}:
     get:
       operationId: getRecording
+      summary: 'One recording''s details.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
       responses:
         '200':
@@ -1768,6 +1915,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/Recording' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -1778,6 +1926,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
       responses:
         '200': { $ref: '#/components/responses/RecordingAudio' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -1793,6 +1942,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
       responses:
         '200': { $ref: '#/components/responses/SignedUrl' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -1804,6 +1954,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
       responses:
         '200': { $ref: '#/components/responses/RecordingAudio' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -1815,6 +1966,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/RecordingId' }]
       responses:
         '200': { $ref: '#/components/responses/SignedUrl' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -1837,6 +1989,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { allOf: [{ $ref: '#/components/schemas/InboundRouting' }], nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     put:
       operationId: setInboundRouting
@@ -1870,6 +2023,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/InboundRouting' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
     delete:
@@ -1891,6 +2045,7 @@ paths:
                     required: [removed]
                     properties:
                       removed: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/inbound-routing/test:
@@ -1950,6 +2105,7 @@ paths:
                               personaGender: { type: string, enum: [female, male, neutral], nullable: true }
                       fallbackAgentId: { type: string, format: uuid, nullable: true, description: "The number's own agent, used when there is no decision." }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -1989,6 +2145,7 @@ paths:
                       calls: { type: array, items: { $ref: '#/components/schemas/CarrierCall' } }
                       truncated: { type: boolean }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -2026,6 +2183,7 @@ paths:
                       rejected: { type: integer }
                       in_progress: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/dial/followups:
@@ -2068,6 +2226,7 @@ paths:
                             to_number: { type: string, nullable: true }
                             from_number: { type: string, nullable: true }
                             call_start: { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/dial/missed-calls:
@@ -2105,6 +2264,7 @@ paths:
                             assigned_to_email: { type: string, nullable: true }
                             created_at: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/dial/number-summary:
@@ -2132,6 +2292,7 @@ paths:
                       total: { type: integer }
                       last2Days: { type: integer }
                       today: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/dial/number-calls:
@@ -2186,6 +2347,7 @@ paths:
                                   body: { type: string }
                                   createdAt: { type: string, format: date-time }
                                   author: { type: string, nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ── Do-not-call list and consent ledger. Writes need an owner, admin or developer key made by an owner,
@@ -2219,6 +2381,7 @@ paths:
                       total: { type: integer, nullable: true, description: 'Page mode: matching rows. Feed mode: null.' }
                       nextCursor: { type: string, description: 'Feed mode only.' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: addDnc
@@ -2249,6 +2412,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/DncEntry' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
@@ -2261,6 +2425,7 @@ paths:
         - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -2294,6 +2459,7 @@ paths:
                       removed: { type: integer }
                       protected: { type: integer, description: 'Opt-outs among the ids, not removed.' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
@@ -2312,6 +2478,7 @@ paths:
             X-Export-Truncated: { schema: { type: string, enum: ['true', 'false'] } }
           content:
             text/csv: { schema: { type: string } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/dnc/import:
@@ -2348,6 +2515,7 @@ paths:
                       added: { type: integer }
                       skipped: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/consent:
@@ -2387,6 +2555,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/ConsentRecord' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
@@ -2414,6 +2583,7 @@ paths:
                       records: { type: array, items: { $ref: '#/components/schemas/ConsentRecord' } }
                       total: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/consent/{phone}/revoke:
@@ -2448,6 +2618,7 @@ paths:
                     properties:
                       revoked: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/consent/coverage:
@@ -2474,6 +2645,7 @@ paths:
                       pending_covered: { type: integer }
                       pending_blocked: { type: integer }
                       mode: { type: string, enum: ['off', required] }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/consent/enforcement:
@@ -2507,6 +2679,7 @@ paths:
                     properties:
                       mode: { type: string, enum: ['off', required] }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
@@ -2537,6 +2710,7 @@ paths:
                       numbers: { type: array, items: { $ref: '#/components/schemas/PricedPhoneNumber' } }
                       total: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/voice/numbers/providers:
     get:
@@ -2572,6 +2746,7 @@ paths:
                                 supports_compliance: { type: boolean }
                                 supports_integration: { type: boolean }
                                 supports_messaging: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/voice/numbers/search:
     get:
@@ -2605,6 +2780,7 @@ paths:
                       numbers: { type: array, items: { $ref: '#/components/schemas/AvailableNumber' } }
                       meta: { nullable: true, description: "The carrier's paging data, as it sent it." }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
@@ -2650,6 +2826,7 @@ paths:
                       providerStatus: { type: string, nullable: true }
                       complianceLinked: { type: boolean }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -2682,6 +2859,7 @@ paths:
                       external_id: { type: string }
                       name: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
 
@@ -2721,6 +2899,7 @@ paths:
                         properties:
                           plivo: { type: string }
                           smartflo: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/voice/numbers/renewal-risk:
     get:
@@ -2757,6 +2936,7 @@ paths:
                             status: { type: string, enum: [not_applicable, overdue, at_risk, renewing, renews_soon, ok] }
                             shortfallUsd: { type: string, nullable: true }
                             daysUntilRenewal: { type: integer, nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/voice/numbers/reclaimable:
     get:
@@ -2797,6 +2977,7 @@ paths:
                             lastSetupPriceUsd: { type: string, nullable: true }
                             reclaimIsManual: { type: boolean }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/voice/numbers/compliance:
     get:
@@ -2818,6 +2999,7 @@ paths:
                     properties:
                       applications: { type: array, items: { $ref: '#/components/schemas/ComplianceApplication' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
     post:
       operationId: submitComplianceApplication
       summary: Submit a regulatory application to the carrier (end-user details and documents).
@@ -2879,6 +3061,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/ComplianceApplication' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
         '500': { $ref: '#/components/responses/Error' }
@@ -2922,6 +3105,7 @@ paths:
                             required_fields: { type: array, nullable: true, items: {} }
                             raw: { description: "The carrier's own entry." }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
 
@@ -2942,6 +3126,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/ComplianceApplication' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
       operationId: deleteComplianceApplication
@@ -2950,6 +3135,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Done' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -2957,6 +3143,7 @@ paths:
   /api/voice/numbers/{id}:
     get:
       operationId: getNumber
+      summary: 'One phone number.'
       parameters: [{ $ref: '#/components/parameters/NumberId' }]
       responses:
         '200':
@@ -2969,6 +3156,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/PricedPhoneNumber' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
       operationId: releaseNumber
@@ -2977,6 +3165,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/NumberId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -2997,6 +3186,7 @@ paths:
                 agentId: { type: string, format: uuid }
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -3010,6 +3200,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -3029,6 +3220,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -3048,6 +3240,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -3070,6 +3263,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3091,6 +3285,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3105,6 +3300,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
@@ -3118,6 +3314,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/NumberAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '500': { $ref: '#/components/responses/Error' }
@@ -3142,6 +3339,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/ReclaimOutcome' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -3171,6 +3369,7 @@ paths:
                     properties:
                       campaigns: { type: array, items: { $ref: '#/components/schemas/Campaign' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createCampaign
@@ -3191,6 +3390,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/Campaign' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3226,6 +3426,7 @@ paths:
                             label: { type: string }
                             writeback: { type: boolean, description: 'Results can be written back to the source.' }
                             settings: { type: array, items: {} }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/campaigns/{id}:
@@ -3259,6 +3460,7 @@ paths:
                               message: { type: string }
                               pending: { type: integer }
                               opensAt: { type: string, nullable: true, description: 'Window only: when it opens.' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
@@ -3283,6 +3485,7 @@ paths:
                       stopped: { type: boolean }
                       priorStatus: { type: string }
                   message: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -3294,6 +3497,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/pause:
     post:
@@ -3302,6 +3506,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/cancel:
     post:
@@ -3310,6 +3515,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/campaigns/{id}/concurrency:
@@ -3328,6 +3534,7 @@ paths:
                 concurrency: { type: integer, minimum: 1, maximum: 50 }
       responses:
         '200': { $ref: '#/components/responses/CampaignAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3358,6 +3565,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/CampaignAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3392,6 +3600,7 @@ paths:
                     properties:
                       retried: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -3413,6 +3622,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/TargetsAdded' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/targets/json:
@@ -3439,6 +3649,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/TargetsAdded' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3475,6 +3686,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SourceSynced' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3508,6 +3720,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { type: object, additionalProperties: true }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
 
@@ -3531,6 +3744,7 @@ paths:
                     required: [sources]
                     properties:
                       sources: { type: array, items: { $ref: '#/components/schemas/CampaignSource' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/sources/{sourceId}:
     patch:
@@ -3548,6 +3762,7 @@ paths:
                 name: { type: string }
       responses:
         '200': { $ref: '#/components/responses/Ok' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
     delete:
@@ -3556,6 +3771,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }, { $ref: '#/components/parameters/SourceId' }]
       responses:
         '200': { $ref: '#/components/responses/Ok' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/sources/{sourceId}/sync:
     post:
@@ -3565,6 +3781,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SourceSynced' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -3598,6 +3815,7 @@ paths:
                       failedTotal: { type: integer }
                       failedUnanswered: { type: integer, description: 'No answer or busy.' }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/calls/export:
@@ -3618,6 +3836,7 @@ paths:
           content:
             text/csv: { schema: { type: string } }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/analytics:
@@ -3636,6 +3855,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CampaignAnalytics' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/reach:
@@ -3662,6 +3882,7 @@ paths:
                       excludedDnc: { type: integer }
                       excludedConsent: { type: integer }
                       accountBlock: { type: string, nullable: true, description: 'Why the account cannot place calls now, if it cannot.' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/campaigns/{id}/variables:
@@ -3691,6 +3912,7 @@ paths:
                           properties:
                             name: { type: string }
                             required: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ── /api/v1/campaigns — the same campaigns for integrations: flat JSON (no success/data wrapper). ──
@@ -3708,6 +3930,7 @@ paths:
                 required: [campaigns]
                 properties:
                   campaigns: { type: array, items: { $ref: '#/components/schemas/Campaign' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createCampaignV1
@@ -3749,6 +3972,7 @@ paths:
                       withoutId: { type: integer }
                       source: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3756,6 +3980,7 @@ paths:
   /api/v1/campaigns/{id}:
     get:
       operationId: getCampaignV1
+      summary: 'One campaign (flat).'
       parameters: [{ $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200':
@@ -3763,6 +3988,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/v1/campaigns/{id}/start:
     post:
@@ -3771,6 +3997,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200': { $ref: '#/components/responses/CampaignV1Answer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/v1/campaigns/{id}/pause:
@@ -3780,6 +4007,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/CampaignId' }]
       responses:
         '200': { $ref: '#/components/responses/CampaignV1Answer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/v1/campaigns/{id}/targets:
@@ -3815,6 +4043,7 @@ paths:
                   without_id: { type: integer, deprecated: true }
                   source: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3842,6 +4071,7 @@ paths:
                   nextCursor: { type: string, nullable: true }
                   nextSince: { type: string, nullable: true }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
 
   # ── Agent templates (Telenow's built-ins, the org's own, and other orgs' approved public ones) and the
@@ -3866,6 +4096,7 @@ paths:
                     required: [templates]
                     properties:
                       templates: { type: array, items: { $ref: '#/components/schemas/AgentTemplate' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: publishTemplate
@@ -3899,6 +4130,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/AgentTemplate' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3951,6 +4183,7 @@ paths:
                           sessionConfig: { type: object, additionalProperties: true }
                           telephonyConfig: { type: object, additionalProperties: true }
                           metadata: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -3971,6 +4204,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/AgentTemplate' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
@@ -3981,6 +4215,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Done' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -4020,6 +4255,7 @@ paths:
                       agentId: { type: string, format: uuid }
                       name: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -4040,6 +4276,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { type: array, items: { $ref: '#/components/schemas/CallerMemory' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     delete:
       operationId: eraseOrgCallerMemory
@@ -4063,6 +4300,7 @@ paths:
                     properties:
                       removed: { type: boolean }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ── Knowledge bases (where the deployment has the knowledge module). Writes need an owner, admin or developer
@@ -4090,9 +4328,11 @@ paths:
                     properties:
                       knowledgeBases: { type: array, items: { $ref: '#/components/schemas/KnowledgeBase' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createKnowledgeBase
+      summary: 'Create a knowledge base.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       requestBody:
         required: true
@@ -4116,11 +4356,13 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/KnowledgeBase' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
   /api/orgs/{orgId}/knowledge-bases/{kbId}:
     get:
       operationId: getKnowledgeBase
+      summary: 'One knowledge base.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }]
       responses:
         '200':
@@ -4133,6 +4375,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/KnowledgeBase' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
@@ -4141,6 +4384,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/knowledge-bases/{kbId}/documents:
@@ -4168,6 +4412,7 @@ paths:
                       documents: { type: array, items: { $ref: '#/components/schemas/KnowledgeDocumentChange' } }
                       total: { type: integer }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     post:
@@ -4187,6 +4432,7 @@ paths:
       responses:
         '201': { $ref: '#/components/responses/KnowledgeDocumentAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -4208,6 +4454,7 @@ paths:
       responses:
         '201': { $ref: '#/components/responses/KnowledgeDocumentAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
@@ -4229,6 +4476,7 @@ paths:
       responses:
         '201': { $ref: '#/components/responses/KnowledgeDocumentAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
@@ -4256,13 +4504,16 @@ paths:
                         properties:
                           body: { type: string }
                           truncated: { type: boolean }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
       operationId: deleteKnowledgeDocument
+      summary: 'Delete one document from a knowledge base.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }, { $ref: '#/components/parameters/DocId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/knowledge-bases/{kbId}/documents/{docId}/retry:
@@ -4273,6 +4524,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/KnowledgeDocumentAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/knowledge-bases/{kbId}/documents/{docId}/dataset:
@@ -4302,6 +4554,7 @@ paths:
                       inlined: { type: boolean, description: 'Small enough to be put in the prompt whole.' }
                       fuzzyTruncated: { type: boolean }
                       fuzzyRowCap: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     patch:
       operationId: setKnowledgeColumnTypes
@@ -4318,6 +4571,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/Ok' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -4352,6 +4606,7 @@ paths:
                       limit: { type: integer }
                       offset: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ── The provider catalog (the same for every org) and provider tools: previews, the ElevenLabs voice library,
@@ -4690,6 +4945,7 @@ paths:
   /api/orgs/{orgId}/voices:
     get:
       operationId: listVoiceProfiles
+      summary: 'The org''s voice profiles.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       responses:
         '200':
@@ -4707,6 +4963,7 @@ paths:
                     properties:
                       voices: { type: array, items: { $ref: '#/components/schemas/VoiceProfile' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createVoiceProfile
@@ -4736,14 +4993,17 @@ paths:
       responses:
         '201': { $ref: '#/components/responses/VoiceProfileAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
   /api/orgs/{orgId}/voices/{voiceId}:
     get:
       operationId: getVoiceProfile
+      summary: 'One voice profile.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/VoiceId' }]
       responses:
         '200': { $ref: '#/components/responses/VoiceProfileAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
@@ -4752,6 +5012,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/VoiceId' }]
       responses:
         '200': { $ref: '#/components/responses/CloneRemoval' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/voices/{voiceId}/sample:
@@ -4765,6 +5026,7 @@ paths:
           content:
             audio/*: { schema: { type: string, format: binary } }
             application/octet-stream: { schema: { type: string, format: binary } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     post:
@@ -4786,6 +5048,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/VoiceProfileAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
@@ -4825,6 +5088,7 @@ paths:
                           languages: { type: array, items: { type: string } }
                           region_note: { type: string }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
         '502': { $ref: '#/components/responses/Error' }
@@ -4848,6 +5112,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/VoiceClone' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -4871,11 +5136,13 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/CloneRemoval' }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/voices/{voiceId}/clones:
     get:
       operationId: listVoiceClones
+      summary: 'The clones made from one voice profile.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/VoiceId' }]
       responses:
         '200':
@@ -4892,6 +5159,7 @@ paths:
                     required: [clones]
                     properties:
                       clones: { type: array, items: { $ref: '#/components/schemas/VoiceClone' } }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/voices/clones:
@@ -4928,6 +5196,7 @@ paths:
                             key_scope: { type: string, enum: [platform, byok] }
                             languages: {}
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/voices/favourites:
     get:
@@ -4939,6 +5208,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/FavouriteVoices' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
     put:
       operationId: starVoice
       summary: "Star a voice (for the key's creator)."
@@ -4958,10 +5228,12 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/FavouriteVoices' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
     delete:
       operationId: unstarVoice
+      summary: 'Remove a voice from the org''s favourites.'
       parameters:
         - { $ref: '#/components/parameters/OrgId' }
         - { name: provider, in: query, required: true, schema: { type: string } }
@@ -4969,6 +5241,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/FavouriteVoices' }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/voices/lookup:
     get:
@@ -5004,12 +5277,14 @@ paths:
                           gender: { type: string }
                           previewUrl: { type: string }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   # ── Webhook endpoints (the org's own receivers). Rows are snake_case; the signing secret is shown once. Sending a
   #    test event or a replay needs an owner or admin key made by an owner or admin. ──
   /api/orgs/{orgId}/webhooks:
     get:
       operationId: listWebhookEndpoints
+      summary: 'The org''s webhook endpoints.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       responses:
         '200':
@@ -5027,6 +5302,7 @@ paths:
                     properties:
                       endpoints: { type: array, items: { $ref: '#/components/schemas/WebhookEndpoint' } }
                       total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createWebhookEndpoint
@@ -5045,6 +5321,21 @@ paths:
                 agentId: { type: string, format: uuid, nullable: true, description: 'Only this agent''s events.' }
                 includeRecording: { type: boolean, default: false }
                 includeTranscript: { type: boolean, default: false }
+      callbacks:
+        callCompleted:
+          '{$request.body#/url}':
+            post:
+              summary: 'call.completed — what Telenow sends when a call finishes (one per call).'
+              description: >-
+                Signed: `X-VoiceAI-Signature: sha256=<hex>` is the HMAC-SHA256 of the raw body under the
+                endpoint's signing secret; `X-VoiceAI-Event` names the event and `X-VoiceAI-Delivery` the
+                delivery (the same id on every retry). Every other event has its own body — read one with
+                GET /api/v1/events/sample.
+              requestBody:
+                required: true
+                content: { application/json: { schema: { $ref: '#/components/schemas/CallCompletedEvent' } } }
+              responses:
+                '2XX': { description: 'Delivered. Any other answer, or none, is retried.' }
       responses:
         '201':
           description: Added — keep `signing_secret`, it is not shown again.
@@ -5062,6 +5353,7 @@ paths:
                       endpoint: { $ref: '#/components/schemas/WebhookEndpoint' }
                       signing_secret: { type: string, description: 'Signs each delivery (X-VoiceAI-Signature: sha256=<HMAC of the body>).' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
@@ -5072,10 +5364,12 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/webhooks/{id}/deliveries:
     get:
       operationId: listWebhookDeliveries
+      summary: 'One endpoint''s deliveries, newest first.'
       parameters:
         - { $ref: '#/components/parameters/OrgId' }
         - { $ref: '#/components/parameters/WebhookId' }
@@ -5098,10 +5392,12 @@ paths:
                       deliveries: { type: array, items: { $ref: '#/components/schemas/WebhookDelivery' } }
                       total: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/webhooks/{id}/deliveries/{deliveryId}:
     get:
       operationId: getWebhookDelivery
+      summary: 'One delivery, with what the endpoint answered.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }, { $ref: '#/components/parameters/DeliveryId' }]
       responses:
         '200':
@@ -5118,6 +5414,7 @@ paths:
                     required: [delivery]
                     properties:
                       delivery: { $ref: '#/components/schemas/WebhookDelivery' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/webhooks/{id}/deliveries/{deliveryId}/replay:
@@ -5132,6 +5429,7 @@ paths:
       responses:
         '202': { $ref: '#/components/responses/WebhookManualSend' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -5156,6 +5454,7 @@ paths:
       responses:
         '202': { $ref: '#/components/responses/WebhookManualSend' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/ErrorOrBadBody' }
@@ -5167,6 +5466,7 @@ paths:
   /api/orgs/{orgId}/call-exports:
     get:
       operationId: listCallExports
+      summary: 'The org''s call exports, newest first.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       responses:
         '200':
@@ -5184,6 +5484,7 @@ paths:
                     required: [retentionDays]
                     properties:
                       retentionDays: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: startCallExport
@@ -5195,6 +5496,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/CallExportAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -5230,15 +5532,18 @@ paths:
                       from: { type: string, format: date-time }
                       to: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/call-exports/{id}:
     get:
       operationId: getCallExport
+      summary: 'One call export and its parts.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallExportId' }]
       responses:
         '200': { $ref: '#/components/responses/CallExportAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     delete:
@@ -5247,14 +5552,17 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallExportId' }]
       responses:
         '200': { $ref: '#/components/responses/CallExportAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/call-exports/{id}/cancel:
     post:
       operationId: cancelCallExport
+      summary: 'Cancel a call export that has not finished.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CallExportId' }]
       responses:
         '200': { $ref: '#/components/responses/CallExportAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/call-exports/{id}/parts/{n}/link:
@@ -5285,6 +5593,7 @@ paths:
                       name: { type: string }
                       bytes: { type: integer, nullable: true }
                       sha256: { type: string, nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -5295,6 +5604,7 @@ paths:
   /api/orgs/{orgId}/sub-accounts:
     get:
       operationId: listSubAccountsOfOrg
+      summary: 'List this org''s sub-accounts, newest first.'
       parameters:
         - { $ref: '#/components/parameters/OrgId' }
         - { name: status, in: query, required: false, schema: { type: string, enum: [active, suspended, closed] } }
@@ -5320,9 +5630,11 @@ paths:
                       limit: { type: integer }
                       offset: { type: integer }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
     post:
       operationId: createSubAccountOfOrg
+      summary: 'Create a sub-account — returns it AND its own API key (shown once).'
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       requestBody:
         required: true
@@ -5344,18 +5656,22 @@ paths:
                       subAccount: { $ref: '#/components/schemas/SubAccount' }
                       apiKey: { $ref: '#/components/schemas/SubAccountKey' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/sub-accounts/{id}:
     get:
       operationId: getSubAccountOfOrg
+      summary: 'One sub-account, with month-to-date spend and live calls.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { $ref: '#/components/responses/SubAccountAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     patch:
       operationId: updateSubAccountOfOrg
+      summary: 'Rename a sub-account, set its externalId, change its limits.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/SubAccountId' }]
       requestBody:
         required: true
@@ -5363,6 +5679,7 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SubAccountAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -5372,12 +5689,14 @@ paths:
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { $ref: '#/components/responses/SubAccountAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/sub-accounts/{id}/suspend:
     post:
       operationId: suspendSubAccountOfOrg
+      summary: 'Refuse a sub-account''s new calls and end its live ones.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/SubAccountId' }]
       requestBody:
         required: false
@@ -5391,15 +5710,18 @@ paths:
       responses:
         '200': { $ref: '#/components/responses/SubAccountAnswer' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/sub-accounts/{id}/resume:
     post:
       operationId: resumeSubAccountOfOrg
+      summary: 'Lift a sub-account''s suspension.'
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { $ref: '#/components/responses/SubAccountAnswer' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
@@ -5437,12 +5759,14 @@ paths:
                       revokedKeys: { type: integer }
                       apiKey: { $ref: '#/components/schemas/SubAccountKey' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/sub-accounts/{id}/usage:
     get:
       operationId: getSubAccountUsageOfOrg
+      summary: 'A sub-account''s calls, billable seconds and spend for a window.'
       parameters:
         - { $ref: '#/components/parameters/OrgId' }
         - { $ref: '#/components/parameters/SubAccountId' }
@@ -5460,6 +5784,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/SubAccountUsage' }
         '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
@@ -5485,6 +5810,7 @@ paths:
                   success: { type: boolean, example: true }
                   data: { $ref: '#/components/schemas/CallAnalyticsSummary' }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/analysis/cost:
     get:
@@ -5512,6 +5838,7 @@ paths:
                       to: { type: string, format: date-time }
                       costUsd: { type: number }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/analysis/result/{sessionId}:
     get:
@@ -5531,6 +5858,7 @@ paths:
                 properties:
                   success: { type: boolean, example: true }
                   data: { allOf: [{ $ref: '#/components/schemas/CallAnalysis' }], nullable: true }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
   /api/sessions/queue:
     get:
@@ -5558,6 +5886,7 @@ paths:
                       items: { type: array, items: { $ref: '#/components/schemas/CampaignCall' } }
                       total: { type: integer }
         '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
   # ------------------------------------------------------------------
@@ -5565,6 +5894,11 @@ paths:
   # viaSocket). Org always comes from the API key; responses are FLAT
   # JSON (no {success,data} envelope).
   # ------------------------------------------------------------------
+  # -- /api/v1: flat JSON (no success/data wrapper), the org from the key. Reads take any key;
+  # writes need an owner, admin or developer key (a viewer key gets 403). A path id that is not a
+  # UUID, a query value that does not parse, a body that is not JSON (400) or one with a missing or
+  # mistyped field (422) is refused by the framework in plain text.
+
   /api/v1/me:
     get:
       operationId: whoAmI
@@ -5577,12 +5911,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [org_id, org_name, key_id, key_name, key_role, parent_org_id]
                 properties:
                   org_id: { type: string, format: uuid }
-                  org_name: { type: string }
+                  org_name: { type: string, nullable: true }
                   key_id: { type: string, format: uuid }
-                  key_name: { type: string }
-                  key_role: { type: string, example: developer }
+                  key_name: { type: string, nullable: true }
+                  key_role: { type: string, enum: [owner, admin, developer, viewer], example: developer }
                   parent_org_id:
                     type: string
                     format: uuid
@@ -5594,6 +5929,7 @@ paths:
     get:
       operationId: listHooks
       summary: List webhook subscriptions (REST hooks).
+      description: The org's active hooks, newest first. The signing secret is never listed.
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: source
@@ -5608,32 +5944,58 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [hooks, total]
                 properties:
                   hooks:
                     type: array
                     items: { $ref: '#/components/schemas/Hook' }
                   total: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
     post:
       operationId: createHook
       summary: Subscribe a target URL to webhook events (REST hooks).
+      description: >
+        No `events` (and no `event`) subscribes to every event (`["*"]`). The URL must be https and
+        its host must resolve to a public address (cloud-metadata, loopback, link-local and private
+        ranges are refused, 400). `agent_id` must be one of your agents (404 otherwise).
       security: [{ ApiKeyAuth: [] }]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/CreateHookRequest' }
+      callbacks:
+        callCompleted:
+          '{$request.body#/target_url}':
+            post:
+              summary: 'call.completed — what Telenow sends when a call finishes (one per call).'
+              description: >-
+                Signed: `X-VoiceAI-Signature: sha256=<hex>` is the HMAC-SHA256 of the raw body under the
+                endpoint's signing secret; `X-VoiceAI-Event` names the event and `X-VoiceAI-Delivery` the
+                delivery (the same id on every retry). Every other event has its own body — read one with
+                GET /api/v1/events/sample.
+              requestBody:
+                required: true
+                content: { application/json: { schema: { $ref: '#/components/schemas/CallCompletedEvent' } } }
+              responses:
+                '2XX': { description: 'Delivered. Any other answer, or none, is retried.' }
       responses:
         '201':
           description: Subscribed. The signing secret is returned ONLY here (never in the list endpoint).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/HookCreated' }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
 
   /api/v1/hooks/{id}:
     delete:
       operationId: deleteHook
       summary: Unsubscribe (idempotent — already-gone returns deleted=false).
+      description: An unknown id, another organization's hook or one already removed answers 200 with `deleted:false`.
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: id
@@ -5647,20 +6009,48 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [id, deleted]
                 properties:
                   id: { type: string, format: uuid }
                   deleted: { type: boolean }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
 
   /api/v1/agents:
     get:
       operationId: listAgentsSlim
       summary: Slim agent list (ids + labels, for dropdowns).
+      description: Your agents, deleted ones and internal stubs left out.
       security: [{ ApiKeyAuth: [] }]
       parameters:
-        - { name: is_active, in: query, schema: { type: boolean } }
-        - { name: limit, in: query, schema: { type: integer, default: 100, maximum: 200 } }
+        - { name: is_active, in: query, description: 'Also read as `isActive` or `active`.', schema: { type: boolean } }
+        - { name: limit, in: query, description: 'Clamped to 1–200 (not an error).', schema: { type: integer, default: 100, maximum: 200 } }
         - { name: offset, in: query, schema: { type: integer, default: 0 } }
-      responses: { '200': { description: '{ agents: [...], total }' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents, total]
+                properties:
+                  agents:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, description, is_active, created_at, updated_at]
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        description: { type: string, nullable: true }
+                        is_active: { type: boolean }
+                        created_at: { type: string, format: date-time }
+                        updated_at: { type: string, format: date-time }
+                  total: { type: integer }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/v1/numbers:
     get:
@@ -5674,7 +6064,32 @@ paths:
       parameters:
         - { name: includeReleased, in: query, schema: { type: boolean, default: false } }
         - { name: updatedAfter, in: query, schema: { type: string, format: date-time } }
-      responses: { '200': { description: '{ numbers: [{ id, phone_number, provider, country, agent_id, is_active, updated_at, released_at }], total }' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [numbers, total]
+                properties:
+                  numbers:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, phone_number, provider, country, agent_id, is_active, updated_at, released_at]
+                      properties:
+                        id: { type: string, format: uuid }
+                        phone_number: { type: string, example: '+14155550123' }
+                        provider: { type: string, example: twilio }
+                        country: { type: string, nullable: true, example: US }
+                        agent_id: { type: string, format: uuid, nullable: true }
+                        is_active: { type: boolean }
+                        updated_at: { type: string, format: date-time }
+                        released_at: { type: string, format: date-time, nullable: true }
+                  total: { type: integer }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/v1/calls:
     get:
@@ -5682,23 +6097,39 @@ paths:
       summary: Call history, newest first.
       security: [{ ApiKeyAuth: [] }]
       parameters:
-        - { name: agent_id, in: query, schema: { type: string, format: uuid } }
+        - { name: agent_id, in: query, description: 'Also read as `agentId`.', schema: { type: string, format: uuid } }
         - { name: status, in: query, schema: { type: string, example: ended } }
-        - { name: sort, in: query, schema: { type: string, enum: [newest, oldest, longest, shortest] } }
-        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: sort, in: query, description: 'Anything else reads as `newest` (not an error).', schema: { type: string, enum: [newest, oldest, longest, shortest] } }
+        - { name: limit, in: query, description: 'Clamped to 1–200 (not an error).', schema: { type: integer, default: 50, maximum: 200 } }
         - { name: offset, in: query, schema: { type: integer, default: 0 } }
         - name: updatedAfter
           in: query
           description: >-
             Start a "changed since" feed - calls changed after this instant (exclusive), oldest
             change first, ordered by (updated_at, id). Not combinable with agent_id, status, sort
-            or offset.
+            or offset (400).
           schema: { type: string, format: date-time }
         - name: cursor
           in: query
-          description: Resume a feed exactly after the last call of the previous page (its nextCursor).
+          description: Resume a feed exactly after the last call of the previous page (its nextCursor). Not with updatedAfter.
           schema: { type: string }
-      responses: { '200': { description: '{ calls: [...], total } - with updatedAfter/cursor: { calls: [...], total: null, nextCursor }. Every call carries updated_at.' } }
+      responses:
+        '200':
+          description: >-
+            `{ calls, total }` — with updatedAfter/cursor: `{ calls, total: null, nextCursor }`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [calls, total]
+                properties:
+                  calls:
+                    type: array
+                    items: { $ref: '#/components/schemas/CallV1' }
+                  total: { type: integer, nullable: true, description: 'Null in feed mode.' }
+                  nextCursor: { type: string, description: 'Feed mode: send it back as `cursor`.' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/v1/calls/{id}:
     get:
@@ -5707,7 +6138,13 @@ paths:
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       responses:
-        '200': { description: Call object with transcript array }
+        '200':
+          description: The call, with its transcript and the agents on it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CallV1Detail' }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/v1/chat:
@@ -5719,7 +6156,10 @@ paths:
         HTTP tools as a voice call, no audio. Omit `sessionId` on the first turn
         (the response returns one); pass it on follow-ups. Flat JSON. A `410`
         means the session expired — resend the same message WITHOUT `sessionId`.
-        A `409` means a reply is still generating — wait, then retry.
+        A `409` means a reply is still generating — wait, then retry. Any key may
+        chat, a viewer key included. If the model cannot be reached the turn still
+        answers 200, with an apology as the `reply`; a provider that cannot be set
+        up at all (no key configured) is a 502.
       security: [{ ApiKeyAuth: [] }]
       requestBody:
         required: true
@@ -5732,13 +6172,32 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChatReply' }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409':
-          description: '`{ "error": "turn in progress" }` — a reply is still generating; retry.'
+          description: A reply is still generating; retry.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: { type: string, example: turn in progress }
         '410':
-          description: '`{ "error": "session expired", "code": "SESSION_EXPIRED" }` — resend without sessionId.'
+          description: The session expired — resend without sessionId.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, code]
+                properties:
+                  error: { type: string, example: session expired }
+                  code: { type: string, enum: [SESSION_EXPIRED] }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
 
   /api/v1/chat/{id}/messages:
     get:
@@ -5752,12 +6211,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChatTranscript' }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/v1/chat/{id}/end:
     post:
       operationId: chatEnd
       summary: End a chat session (idempotent) — settles billing + triggers analysis.
+      description: A session that is not a chat-API session is 404, like an unknown one.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/SessionId' }]
       responses:
@@ -5767,23 +6229,30 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [sessionId, ended]
                 properties:
                   sessionId: { type: string, format: uuid }
                   ended: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/v1/events/sample:
     get:
       operationId: sampleEvent
       summary: Latest real payload for an event type (canned dummy if none).
+      description: >-
+        `is_real` is false when the org has no delivery of that event yet and the sample is a canned
+        one. Each sample is the event's payload as a webhook receives it (see the Webhooks section).
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - name: type
           in: query
           required: true
+          description: Also read as `event`.
           schema:
             type: string
-            enum: [call.started, call.ended, call.completed, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment]
+            enum: [call.started, call.ended, call.completed, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment, billing.spend_state_changed]
       responses:
         '200':
           description: OK
@@ -5791,12 +6260,20 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [event_type, is_real, samples]
                 properties:
                   event_type: { type: string }
                   is_real: { type: boolean }
                   samples:
                     type: array
-                    items: { type: object }
+                    items:
+                      type: object
+                      required: [event]
+                      additionalProperties: true
+                      properties:
+                        event: { type: string, example: call.ended }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
 
   # -- Integration connectors ------------------------------------------------
   # Connect a vendor account (a store, a CRM, a database, WhatsApp) to this org
@@ -5813,7 +6290,17 @@ paths:
         by a dashboard flow of their own are omitted, because a credentials body
         cannot set them up.
       security: [{ ApiKeyAuth: [] }]
-      responses: { '200': { description: '{ providers: [...] }' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [providers]
+                properties:
+                  providers: { type: array, items: { $ref: '#/components/schemas/Connector' } }
+        '401': { $ref: '#/components/responses/Error' }
 
   /api/v1/integrations/providers/{providerId}:
     get:
@@ -5823,7 +6310,10 @@ paths:
       parameters:
         - { name: providerId, in: path, required: true, schema: { type: string, example: shopify } }
       responses:
-        '200': { description: Connector spec }
+        '200':
+          description: The connector
+          content: { application/json: { schema: { $ref: '#/components/schemas/Connector' } } }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
 
   /api/v1/integrations/connections:
@@ -5836,7 +6326,17 @@ paths:
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - { name: providerId, in: query, schema: { type: string, example: shopify } }
-      responses: { '200': { description: '{ connections: [...] }' } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections: { type: array, items: { $ref: '#/components/schemas/Connection' } }
+        '401': { $ref: '#/components/responses/Error' }
     post:
       operationId: createConnection
       summary: Connect a vendor account.
@@ -5854,6 +6354,7 @@ paths:
         Send an `Idempotency-Key` header anyway: the 409 tells you a duplicate
         happened, it does not make the retry succeed. With the header a retry of
         the same body replays the original 201 and its connection id.
+        A connector this API cannot connect is 404; a missing credential or setting is 400.
       security: [{ ApiKeyAuth: [] }]
       parameters:
         - { name: Idempotency-Key, in: header, schema: { type: string, format: uuid } }
@@ -5863,10 +6364,24 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ConnectionRequest' }
       responses:
-        '201': { description: '{ connection, verification, next }' }
-        '400': { $ref: '#/components/responses/Error' }
+        '201':
+          description: Connected (whatever the verification found).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connection, verification, next]
+                properties:
+                  connection: { $ref: '#/components/schemas/Connection' }
+                  verification: { allOf: [{ $ref: '#/components/schemas/ConnectionVerification' }], nullable: true, description: 'Null when not verified (`verify: false`, or an OAuth connector).' }
+                  next: { type: string, nullable: true, description: 'OAuth connectors: the call that gets the consent URL.' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
 
   /api/v1/integrations/connections/{id}:
     get:
@@ -5875,7 +6390,9 @@ paths:
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
       responses:
-        '200': { description: '{ connection }' }
+        '200': { $ref: '#/components/responses/ConnectionAnswer' }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
     patch:
       operationId: updateConnection
@@ -5883,10 +6400,10 @@ paths:
       description: >
         Partial. An omitted field keeps its stored value, and a credential sent
         back as the mask keeps the stored secret - so you can read a connection,
-        change one setting and send it back. Re-verifies by default. `providerId`
-        cannot change; delete it and connect the other one instead. Repointing at
-        a different account is allowed, and 409s if another connection already
-        holds that one.
+        change one setting and send it back. Re-verifies by default (not an OAuth
+        connection). `providerId` cannot change (400); delete it and connect the
+        other one instead. Repointing at a different account is allowed, and 409s
+        if another connection already holds that one.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
       requestBody:
@@ -5895,10 +6412,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ConnectionRequest' }
       responses:
-        '200': { description: '{ connection, verification }' }
-        '400': { $ref: '#/components/responses/Error' }
+        '200': { $ref: '#/components/responses/ConnectionUpdated' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
     put:
       operationId: replaceConnection
       summary: Alias of PATCH, with the same partial semantics.
@@ -5910,7 +6431,14 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/ConnectionRequest' }
       responses:
-        '200': { description: '{ connection, verification }' }
+        '200': { $ref: '#/components/responses/ConnectionUpdated' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
     delete:
       operationId: deleteConnection
       summary: Disconnect.
@@ -5918,10 +6446,23 @@ paths:
         Refused with 409 while an agent or a WhatsApp channel still uses it, and
         the message names them. That guard is not cosmetic - deleting a
         connection cascades its WhatsApp channel and every message on it.
+        Not idempotent: deleting it again is 404.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
       responses:
-        '200': { description: '{ deleted: true, id }' }
+        '200':
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: { type: boolean, example: true }
+                  id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
 
@@ -5932,27 +6473,47 @@ paths:
       description: >
         Makes a real request to the vendor with the stored credentials and
         records the result on the connection. Returns 200 whether or not the
-        credentials work - the answer is in `ok`.
+        credentials work - the answer is in `ok`. A connector with no
+        verification call (an OAuth one, a custom HTTP source) answers ok.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
       responses:
-        '200': { description: '{ ok, error?, warnings: [...] }' }
+        '200':
+          description: What the vendor said
+          content: { application/json: { schema: { $ref: '#/components/schemas/ConnectionVerification' } } }
+        '400': { $ref: '#/components/responses/BadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
 
   /api/v1/integrations/connections/{id}/authorize:
     post:
       operationId: authorizeConnection
       summary: OAuth connectors - get the consent URL.
       description: >
-        For `authKind: oauth2` only. Redirect your END USER to `authorizeUrl`;
+        For `authKind: oauth2` only (another connection is 400). Redirect your END USER to `authorizeUrl`;
         after they consent the vendor returns them to the Telenow dashboard
         (`returnsTo`), not to your app - there is no return-URL parameter, by
         design. Poll `pollUrl` until the connection's `status` is `active`.
       security: [{ ApiKeyAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/ConnectionId' }]
       responses:
-        '200': { description: '{ authorizeUrl, returnsTo, pollUrl }' }
-        '400': { $ref: '#/components/responses/Error' }
+        '200':
+          description: The consent URL
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizeUrl, returnsTo, pollUrl]
+                properties:
+                  authorizeUrl: { type: string, format: uri }
+                  returnsTo: { type: string }
+                  pollUrl: { type: string, description: "This connection's GET URL." }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
 
   # ------------------------------------------------------------------
   # Sub-accounts — organizations this org creates for its own customers
@@ -6020,7 +6581,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6034,7 +6595,7 @@ paths:
         content: { application/json: { schema: { $ref: '#/components/schemas/UpdateSubAccountRequest' } } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6050,7 +6611,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { description: The closed sub-account, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6073,7 +6634,7 @@ paths:
                 reason: { type: string, maxLength: 500 }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6087,7 +6648,7 @@ paths:
       parameters: [{ $ref: '#/components/parameters/SubAccountId' }]
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccount' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6104,7 +6665,7 @@ paths:
         - { name: to, in: query, required: false, schema: { type: string, format: date-time } }
       responses:
         '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/SubAccountUsage' } } } }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6137,7 +6698,7 @@ paths:
                   subAccountId: { type: string, format: uuid }
                   revokedKeys: { type: integer }
                   apiKey: { $ref: '#/components/schemas/SubAccountKey' }
-        '400': { $ref: '#/components/responses/Error' }
+        '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
@@ -6408,18 +6969,7 @@ components:
       description: Error
       content:
         application/json:
-          schema:
-            type: object
-            required: [success, error]
-            additionalProperties: true
-            description: >-
-              Some errors add a machine-readable `code` (e.g. `provider_error` on a 502,
-              `agent_version_conflict` on a 409) and details beside it (`currentVersion`, `path`).
-            properties:
-              success: { type: boolean, example: false }
-              error: { type: string }
-              code: { type: string }
-              retryAfter: { type: integer, description: 'On a 429: seconds to wait (also the Retry-After header).' }
+          schema: { $ref: '#/components/schemas/ErrorBody' }
     Done:
       description: Done.
       content:
@@ -6623,6 +7173,25 @@ components:
                 properties:
                   url: { type: string }
                   expiresAt: { type: string, format: date-time }
+    ConnectionAnswer:
+      description: The connection
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [connection]
+            properties:
+              connection: { $ref: '#/components/schemas/Connection' }
+    ConnectionUpdated:
+      description: Updated
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [connection, verification]
+            properties:
+              connection: { $ref: '#/components/schemas/Connection' }
+              verification: { allOf: [{ $ref: '#/components/schemas/ConnectionVerification' }], nullable: true }
     ErrorOrBadBody:
       description: Refused — JSON for a value the route checks, plain text for one that does not parse.
       content:
@@ -6642,6 +7211,18 @@ components:
         text/plain:
           schema: { type: string }
   schemas:
+    ErrorBody:
+      type: object
+      required: [success, error]
+      additionalProperties: true
+      description: >-
+        Some errors add a machine-readable `code` (e.g. `provider_error` on a 502,
+        `agent_version_conflict` on a 409) and details beside it (`currentVersion`, `path`).
+      properties:
+        success: { type: boolean, example: false }
+        error: { type: string }
+        code: { type: string }
+        retryAfter: { type: integer, description: 'On a 429: seconds to wait (also the Retry-After header).' }
     SpendState:
       type: object
       description: >-
@@ -6761,6 +7342,69 @@ components:
         totalSpendUsd: { type: number }
         limits: { $ref: '#/components/schemas/SubAccountLimits' }
         status: { type: string, enum: [active, suspended, closed] }
+    Connector:
+      type: object
+      description: A connector, and the exact fields a connection to it takes.
+      required: [providerId, name, category, blurb, authKind, docsUrl, connect, capabilities]
+      properties:
+        providerId: { type: string, example: shopify }
+        name: { type: string, example: Shopify }
+        category: { type: string, example: commerce }
+        blurb: { type: string }
+        authKind: { type: string, example: api_key, description: '`api_key` (send credentials), `oauth2` (authorize after create), `builtin`, …' }
+        docsUrl: { type: string, nullable: true }
+        connect:
+          type: object
+          required: [credentials, settings]
+          properties:
+            credentials: { type: array, items: { $ref: '#/components/schemas/ConnectorField' }, description: 'Goes in `credentials` (secret ones are never returned).' }
+            settings: { type: array, items: { $ref: '#/components/schemas/ConnectorField' }, description: 'Goes in `settings`.' }
+        capabilities:
+          type: array
+          description: What an agent can do through a connection to it.
+          items:
+            type: object
+            required: [capability, name, description]
+            properties:
+              capability: { type: string, example: whatsapp.send }
+              name: { type: string }
+              description: { type: string }
+    ConnectorField:
+      type: object
+      required: [key, label, required]
+      properties:
+        key: { type: string, example: api_token }
+        label: { type: string }
+        required: { type: boolean }
+        secret: { type: boolean, description: 'Encrypted at rest and returned only as a mask.' }
+        kind: { type: string, description: 'A field filled by a dashboard flow of its own (e.g. `whatsapp_session`).' }
+        placeholder: { type: string }
+        help: { type: string }
+    Connection:
+      type: object
+      description: A connection, secrets masked (`••••••••`).
+      required: [id, providerId, providerName, authKind, label, credentials, settings, status, lastError, lastUsedAt, createdAt, capabilities]
+      properties:
+        id: { type: string, format: uuid }
+        providerId: { type: string }
+        providerName: { type: string }
+        authKind: { type: string }
+        label: { type: string }
+        credentials: { type: object, additionalProperties: { type: string }, description: 'Secret values read as the mask; send the mask back to keep one.' }
+        settings: { type: object, additionalProperties: true }
+        status: { type: string, enum: [active, error, disconnected], description: '`disconnected` — an OAuth connection until consent lands.' }
+        lastError: { type: string, nullable: true }
+        lastUsedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        capabilities: { type: array, items: { type: string } }
+    ConnectionVerification:
+      type: object
+      description: What the connector's verification call found.
+      required: [ok, warnings]
+      properties:
+        ok: { type: boolean }
+        error: { type: string, description: 'When not ok.' }
+        warnings: { type: array, items: { type: string } }
     ConnectionRequest:
       type: object
       description: >
@@ -6829,14 +7473,15 @@ components:
         billableSecs: { type: integer, nullable: true, description: Seconds the carrier billed; null when none reported }
         startTime: { type: string, format: date-time }
         endTime: { type: string, format: date-time, nullable: true }
-        variables: { type: object, nullable: true }
+        variables: { type: object, nullable: true, additionalProperties: true, description: The call's variables, as given. }
         analysis: { type: object, nullable: true, description: Present only if post-call analysis already finished }
-        callRecord: { type: object, description: Present only when the agent graded the call }
+        callRecord: { allOf: [{ $ref: '#/components/schemas/CallRecord' }], description: Present only when the agent kept a call record }
         campaignId: { type: string, format: uuid, nullable: true }
         campaignTargetId: { type: string, format: uuid, nullable: true }
         attempt: { type: integer, nullable: true, description: This target's dial number, 1 for the first }
     Hook:
       type: object
+      required: [id, target_url, events, agent_id, include_recording, include_transcript, source, created_at]
       properties:
         id: { type: string, format: uuid }
         target_url: { type: string, format: uri }
@@ -6856,6 +7501,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/Hook'
         - type: object
+          required: [signing_secret, secret]
           properties:
             signing_secret: { type: string, description: 'HMAC-SHA256 key for X-VoiceAI-Signature verification' }
             secret: { type: string, description: 'Alias of signing_secret' }
@@ -6869,7 +7515,7 @@ components:
           type: array
           items: { type: string }
           description: >-
-            20 valid names, or "*" for all. Session-scoped (carry sessionId/agentId):
+            21 valid names, or "*" for all (no events subscribes to all). Session-scoped (carry sessionId/agentId):
             call.started, call.ended, call.completed, call.machine_detected, call.dtmf,
             transcript.ready, tool.invoked, recording.ready, call.analyzed.
             Org-scoped (NO agentId — an agent-scoped hook never receives these):
@@ -6878,7 +7524,7 @@ components:
             billing.payment_overdue, billing.account_suspended,
             billing.number_renewal_due, billing.number_renewed,
             billing.number_renewal_failed, billing.number_release_pending,
-            billing.number_released_nonpayment.
+            billing.number_released_nonpayment, billing.spend_state_changed.
             An unknown name is rejected 400 with the full valid list.
         agent_id: { type: string, format: uuid, description: Scope to one agent (omit = org-wide) }
         include_recording: { type: boolean, default: false }
@@ -6905,6 +7551,7 @@ components:
           description: 'Context variables — first message of a session only.'
     ChatReply:
       type: object
+      required: [sessionId, reply, turn, identifier]
       properties:
         sessionId: { type: string, format: uuid }
         reply: { type: string, description: "The agent's full reply (tool calls resolved)." }
@@ -6912,12 +7559,14 @@ components:
         identifier: { type: string }
     ChatMessage:
       type: object
+      required: [role, content, createdAt]
       properties:
         role: { type: string, example: assistant }
         content: { type: string }
         createdAt: { type: string, format: date-time }
     ChatTranscript:
       type: object
+      required: [sessionId, messages]
       properties:
         sessionId: { type: string, format: uuid }
         messages:
@@ -6927,9 +7576,9 @@ components:
       type: object
       required: [agentId]
       properties:
-        agentId: { type: string }
-        ttlSeconds: { type: integer, example: 600 }
-        maxCalls: { type: integer, example: 1 }
+        agentId: { type: string, format: uuid, description: 'An agent of your organization (unknown: 404).' }
+        ttlSeconds: { type: integer, default: 600, example: 600, description: 'Clamped to 30–3600 (not an error).' }
+        maxCalls: { type: integer, default: 1, example: 1, description: 'Calls the token may start; clamped to 1–100.' }
         variables: { type: object, additionalProperties: { type: string } }
         callerIdentity:
           type: object
@@ -6939,6 +7588,7 @@ components:
             channel: { type: string }
     ClientToken:
       type: object
+      required: [token, expiresAt]
       properties:
         token: { type: string }
         expiresAt: { type: string, format: date-time }
@@ -7008,11 +7658,13 @@ components:
         userId: { type: string, format: uuid }
     CallResult:
       type: object
+      required: [sessionId, callId, status, callStatus, phoneNumber]
       properties:
         sessionId: { type: string }
-        callId: { type: string }
-        status: { type: string }
-        phoneNumber: { type: string }
+        callId: { type: string, description: The carrier's call id. }
+        status: { type: string, example: active }
+        callStatus: { type: string, description: What the carrier said when it took the dial. }
+        phoneNumber: { type: string, description: The number dialled, as sent. }
     QueuedCallResult:
       type: object
       description: >
@@ -7028,17 +7680,21 @@ components:
         deduplicated:
           type: boolean
           description: >
-            True when the number was ALREADY live in the queue, so nothing new
-            was added. A number is held unique while pending/dialing.
+            True when the number was ALREADY live in this queue, so nothing new
+            was added. A number is held unique while pending/dialing. The queue is
+            per agent and dial policy: the same number with another policy is a new
+            entry in another queue (another campaignId).
         pendingAhead:
           type: integer
           description: Queue depth after this call.
     SessionInfo:
       type: object
+      required: [sessionId, websocketUrl, status]
       properties:
         sessionId: { type: string }
         websocketUrl: { type: string, example: 'wss://api.telenow.ai/ws/web-agent' }
         status: { type: string }
+        transport: { type: string, example: websocket, description: 'Agent mode: how the client joins (`websocket`). Not on a widget session.' }
         embedSnippet: { type: string, description: 'Agent-mode only: ready-to-paste WebAgentWidget embed script.' }
         # Manual/softphone mode (mode: "manual") additionally returns:
         callId: { type: string, description: 'Carrier call id (manual mode).' }
@@ -7253,13 +7909,13 @@ components:
       properties:
         value: { type: string }
         count: { type: integer }
-    CallRow:
+    CallRowBase:
       type: object
       description: >-
-        A call as the call log lists it. Keys are snake_case and always present. `lead`, `source`,
+        The fields every call row carries, in the call log and on /api/v1 (`CallRow`, `CallV1`). A call as the call log lists it. Keys are snake_case and always present. `lead`, `source`,
         `caller_memory` and `variables` read null once the call's content is purged
         (`content_purged_at`).
-      required: [id, org_id, agent_id, agent_name, user_id, initiated_by, initiated_by_name, initiated_via, initiated_by_email, initiated_by_api_key, status, call_mode, channel, direction, from_number, to_number, phone_number, call_sid, start_time, end_time, duration_sec, answered_by, disposition, wrapup_disposition, resp_ms_avg, resp_ms_max, resp_samples, agent_audible_count, audio_gap_count, stt_ms_avg, turn_hold_ms_avg, llm_ms_avg, tts_ms_avg, net_rtt_ms_avg, flow_ms_avg, recording_id, lead, source, caller_memory, variables, created_at, objectives_state, content_purged_at, updated_at, charge_usd, artifacts]
+      required: [id, org_id, agent_id, agent_name, user_id, initiated_by, initiated_by_name, initiated_via, initiated_by_email, initiated_by_api_key, status, call_mode, channel, direction, from_number, to_number, phone_number, call_sid, start_time, end_time, duration_sec, answered_by, disposition, wrapup_disposition, resp_ms_avg, resp_ms_max, resp_samples, agent_audible_count, audio_gap_count, stt_ms_avg, turn_hold_ms_avg, llm_ms_avg, tts_ms_avg, net_rtt_ms_avg, flow_ms_avg, recording_id, lead, source, caller_memory, variables, created_at, content_purged_at, updated_at, charge_usd, artifacts]
       properties:
         id: { type: string, format: uuid }
         org_id: { type: string, format: uuid, nullable: true }
@@ -7302,7 +7958,6 @@ components:
         caller_memory: { nullable: true, description: 'What the agent remembered about the caller.' }
         variables: { type: object, additionalProperties: true, nullable: true }
         created_at: { type: string, format: date-time }
-        objectives_state: { nullable: true, description: "The call's objectives as the agent left them." }
         content_purged_at: { type: string, format: date-time, nullable: true }
         updated_at: { type: string, format: date-time, nullable: true }
         charge_usd: { type: string, nullable: true, example: '0.42', description: 'What the call was charged (decimal string); null until settled.' }
@@ -7315,22 +7970,60 @@ components:
             latency: { type: boolean }
             recording: { type: boolean }
             trace: { type: boolean }
+    CallRow:
+      description: A call as the call log lists it (`CallRowBase` plus the objectives as stored).
+      allOf:
+        - { $ref: '#/components/schemas/CallRowBase' }
+        - type: object
+          required: [objectives_state]
+          properties:
+            objectives_state: { nullable: true, description: "The call's objectives as the agent left them." }
+    CallRecord:
+      type: object
+      description: >-
+        What the agent recorded on the call — the objectives it kept. `disposition` is the agent's own
+        rule over what the call established (null when no rule matched), not a carrier outcome.
+      required: [disposition, established, seeded, declined, actionsDone, optedOut]
+      properties:
+        disposition: { type: string, nullable: true }
+        established: { type: object, additionalProperties: true }
+        seeded: { type: array, items: { type: string } }
+        declined: { type: array, items: { type: string } }
+        actionsDone: { type: array, items: { type: string } }
+        optedOut: { type: boolean }
+    CallV1:
+      description: >-
+        A call as /api/v1 returns it — the call log's row without `objectives_state`, and in its place
+        `callRecord`, present only when the agent kept a call record (absent, not null, otherwise).
+      allOf:
+        - { $ref: '#/components/schemas/CallRowBase' }
+        - type: object
+          properties:
+            callRecord: { $ref: '#/components/schemas/CallRecord' }
+    CallV1Detail:
+      allOf:
+        - { $ref: '#/components/schemas/CallV1' }
+        - type: object
+          required: [transcript, participants]
+          properties:
+            transcript: { type: array, items: { $ref: '#/components/schemas/TranscriptTurn' } }
+            participants: { type: object, additionalProperties: { type: string }, description: 'Agent id → name, for the agents on the call.' }
+    TranscriptTurn:
+      type: object
+      description: One turn of a call's transcript (system messages left out).
+      required: [role, text, at, agent_id]
+      properties:
+        role: { type: string }
+        text: { type: string }
+        at: { type: string, format: date-time }
+        agent_id: { type: string, nullable: true, description: 'Which agent spoke, on a call handed between agents.' }
     CallDetail:
       allOf:
         - { $ref: '#/components/schemas/CallRow' }
         - type: object
           required: [transcript, participants, llm_prompt_tokens, llm_completion_tokens, llm_total_tokens, llm_cached_tokens, recordings, post_call, stack, completeness]
           properties:
-            transcript:
-              type: array
-              items:
-                type: object
-                required: [role, text, at, agent_id]
-                properties:
-                  role: { type: string }
-                  text: { type: string }
-                  at: { type: string, format: date-time }
-                  agent_id: { type: string, nullable: true, description: 'Which agent spoke, on a call handed between agents.' }
+            transcript: { type: array, items: { $ref: '#/components/schemas/TranscriptTurn' } }
             participants: { type: object, additionalProperties: { type: string }, description: 'Agent id → name, for the agents on the call.' }
             llm_prompt_tokens: { type: integer }
             llm_completion_tokens: { type: integer }
