@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Telenow Voice API
-  version: 1.1.0
+  version: 1.4.0
   description: >
     Control-plane API for the Telenow Voice SDK. Generate backend clients in any
     language from this spec (see README). Audio is carried over a separate
@@ -69,6 +69,7 @@ paths:
         retry on no answer): the same number queued again with the same policy is `deduplicated`;
         with another policy it joins another queue.
       security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -257,11 +258,26 @@ paths:
         fetched per play (for audio your system renders per call). Exactly one.
 
 
-        Returns as soon as playback is QUEUED, with the recording's duration — a
-        five-minute track would otherwise hold the request open for five
-        minutes. Playing again supersedes whatever is currently playing. The
-        session must still be active (an ended one is 400). A url the server cannot fetch or a
-        track it cannot load is 400.
+        Returns as soon as playback is QUEUED, with the recording's duration and
+        `delivery` — `playing` (it starts now) or `queued` (it waits for the line) — a
+        five-minute track would otherwise hold the request open for five minutes.
+        Playing again replaces a recording that is playing. The session must still be
+        active (an ended one is 400). A url the server cannot fetch or a track it
+        cannot load is 400.
+
+
+        On an agent call a recording never cuts the agent's own speech and never
+        plays over the caller: while either is speaking it waits for the line
+        (`maxWaitMs`, default 20000 — the longest wait, since a recording used to cut in
+        at once) and is dropped if the line does not come free in time — or, with
+        `ifBusy: "refuse"`, the answer is 409 with the reason. `maxWaitMs` counts only
+        while it waits: a recording answered `playing` is never dropped as stale. A reply
+        that starts while a recording plays stops the recording cleanly. On a manual
+        call (no agent) it plays at once, as before. On a web or app call it is sent
+        wideband — at the file's own rate from 24 to 48 kHz; a lower rate is raised to
+        24 kHz and a higher one lowered to 48 kHz (library tracks uploaded since
+        2026-11-05 are kept at 24 kHz; older ones at 8 kHz) — and a phone call hears it at
+        8 kHz, band-limited. A call held by another server is forwarded there.
 
 
         Works on an agent call and on a **manual (softphone)** call alike. With
@@ -284,8 +300,23 @@ paths:
                 url:
                   type: string
                   format: uri
-                  description: HTTPS URL to a 16-bit PCM WAV (8 MB cap).
+                  description: HTTPS URL to a 16-bit PCM WAV, 8–192 kHz (8 MB cap).
                   example: 'https://example.com/order-confirm.wav'
+                ifBusy:
+                  type: string
+                  enum: [queue, refuse]
+                  default: queue
+                  description: While the agent or the caller is speaking — wait for the line, or answer 409.
+                maxWaitMs:
+                  type: integer
+                  minimum: 0
+                  maximum: 20000
+                  default: 20000
+                  description: How long a queued recording may wait for the line before it is dropped. A value outside 0–20000 is clamped to it, not refused.
+                interruptible:
+                  type: boolean
+                  default: true
+                  description: '`false`: the caller cannot cut the recording; what they say over it is kept and answered right after it.'
               oneOf:
                 - required: [trackId]
                 - required: [url]
@@ -307,10 +338,107 @@ paths:
                       trackId: { type: string, format: uuid, nullable: true }
                       url: { type: string, nullable: true }
                       durationMs: { type: integer, example: 8400 }
+                      playId: { type: string, format: uuid }
+                      delivery: { type: string, enum: [playing, queued] }
         '400': { $ref: '#/components/responses/ErrorOrBadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/BadBody' }
+        '409':
+          description: '`ifBusy: "refuse"` and the line is busy — `agent_speaking`, `caller_speaking`, `on_hold` or `machine_check`.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '429':
+          description: '`queue_full` — three lines (says and recordings) already wait on this call.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '503':
+          description: '`owner_unknown` (the call''s server has not registered it yet) or `owner_unreachable` (it did not answer in time). Retry after `Retry-After` seconds.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+
+  /api/sessions/{id}/say:
+    post:
+      operationId: sayLine
+      summary: Have the live agent say a line, in its own voice, with no model turn.
+      description: >
+        Speaks `text` into a live call through the call's own voice — the agent's TTS provider,
+        voice, language handling and sample rate — without asking the model anything. Built for a
+        backend that narrates its own work while the agent's tool call is still running ("Asha's
+        page is open", "the greeting is filled in"): the line may play while a tool runs.
+
+
+        It never talks over the caller and never cuts the agent's own reply: while either is
+        speaking it waits for the line (`maxWaitMs`, default 5000) and is dropped if the line does
+        not come free in time — or, with `ifBusy: "refuse"`, the answer is 409 with the reason. A
+        reply that is ready while a line is being sent waits for it, then follows straight after.
+        A later say with the same `key` replaces one still waiting. At most three lines (says and
+        recordings) wait per call. `maxWaitMs` counts only while a line waits: one answered
+        `speaking` is never dropped as stale.
+
+
+        A spoken line is the agent's own line: it is in the call's transcript in the order it was
+        spoken (with `metadata.line = "say"`), sent to `transcript.ready` webhooks, and shown to the
+        model so it does not say it again. It is billed as the call's TTS; no LLM tokens. Not on
+        speech-to-speech agents or calls a person holds. A call held by another server is forwarded
+        there.
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/SessionId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 300, example: 'Asha ka page khul gaya.' }
+                key: { type: string, maxLength: 128, example: progress }
+                ifBusy: { type: string, enum: [queue, refuse], default: queue }
+                maxWaitMs:
+                  type: integer
+                  minimum: 0
+                  maximum: 20000
+                  default: 5000
+                  description: How long it may wait for the line. A value outside 0–20000 is clamped to it, not refused.
+                interruptible:
+                  type: boolean
+                  default: true
+                  description: '`false`: the caller cannot cut the line; what they say over it is kept (never dropped) and answered right after it.'
+      responses:
+        '202':
+          description: >
+            Taken. `delivery`: `speaking` (it starts now) or `queued` (it waits for the line, at
+            most `maxWaitMs`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean }
+                  data:
+                    type: object
+                    required: [sayId, key, delivery]
+                    properties:
+                      sayId: { type: string, format: uuid }
+                      key: { type: string, nullable: true }
+                      delivery: { type: string, enum: [speaking, queued] }
+        '400':
+          description: '`empty` (no `text`, or one that is blank), `invalid_key` (a key over 128 characters), `invalid_if_busy`, or a body that is not the JSON above (a `text` that is not a string, malformed JSON).'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '401': { $ref: '#/components/responses/Error' }
+        '404':
+          description: No such call in your organization (another organization's call answers the same).
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '409':
+          description: '`not_live` (the call has ended), `not_ready` (its voice is not connected yet), `no_agent` (a person has the call — a manual call, a takeover, a transfer), `engine_unsupported` (a speech-to-speech agent), or — with `ifBusy: "refuse"` — `agent_speaking`, `caller_speaking`, `on_hold`, `machine_check`.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '413':
+          description: '`too_large` — more than 300 characters (Unicode code points); the body carries `maxChars`.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '429':
+          description: '`queue_full` (three lines already wait on this call), or over the API''s rate limit.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+        '503':
+          description: '`owner_unknown` (the call''s server has not registered it yet) or `owner_unreachable` (it did not answer in time). Retry after `Retry-After` seconds.'
+          content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
 
   /api/sessions/{id}:
     delete:
@@ -460,6 +588,7 @@ paths:
         - { name: env, in: query, required: false, description: "Matched against `metadata.environment`.", schema: { type: string, enum: [dev, staging, prod] } }
         - { name: sort, in: query, required: false, schema: { type: string, enum: [new, old, az, za] } }
         - { $ref: '#/components/parameters/AgentView' }
+        - { name: fields, in: query, required: false, description: '`summary` returns each row as an `AgentSummary` instead of an `AgentRecord`: enough to draw a list, much smaller, with no prompt, config or key. Without it you get whole rows.', schema: { type: string, enum: [summary] } }
       responses:
         '200':
           description: OK
@@ -483,7 +612,7 @@ paths:
       operationId: createAgent
       summary: Create an agent.
       description: Needs an owner, admin or developer key.
-      parameters: [{ $ref: '#/components/parameters/AgentView' }]
+      parameters: [{ $ref: '#/components/parameters/AgentView' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/Agent' } } }
@@ -557,7 +686,7 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/AgentVersionConflict' }
         '422': { $ref: '#/components/responses/BadBody' }
     delete:
       operationId: deleteAgent
@@ -1871,7 +2000,8 @@ paths:
       description: >-
         Fires `recording.ready` to the org's webhooks. Tied to a call, it replaces that call's
         server-side fallback recording. `session_id` and `agent_id` must be this org's own (404
-        otherwise, before anything is stored).
+        otherwise, before anything is stored). Refused 409, storing nothing, while the org sends its
+        recordings to itself (getRecordingDelivery `destination: send`).
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       requestBody:
         required: true
@@ -1903,7 +2033,82 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '413': { $ref: '#/components/responses/Error' }
+
+  /api/orgs/{orgId}/recordings/delivery:
+    get:
+      operationId: getRecordingDelivery
+      summary: Where the org's call recordings go — kept in Telenow, or sent to you with no copy kept.
+      description: >-
+        `ready` is false only in send mode with no enabled endpoint subscribed to `recording.audio`
+        by name: every recording would then be lost (`recording.failed`, reason `no_destination`).
+        Whether a call is recorded at all is still its agent's `telephony.recording` (and, on a
+        softphone call, the member's "Record their softphone calls"). Any member.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/RecordingDelivery' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+    put:
+      operationId: setRecordingDelivery
+      summary: Choose where the org's call recordings go.
+      description: >-
+        `telenow` (the default) stores each recording here (Recordings, `recording.ready`). `send`
+        stores nothing — no file, no recording row — and hands each finished recording to every
+        enabled endpoint that subscribes to `recording.audio` by name: a multipart/form-data POST
+        with a `metadata` JSON part (recordingId, sessionId, agentId, channel, durationSecs, mime,
+        sampleRate, sizeBytes, audioSha256, audioLayout, storedByTelenow: false, plus the common
+        fields) and an `audio` file part. `X-VoiceAI-Signature: sha256=<hex>` is the endpoint
+        secret's HMAC-SHA256 of the RAW request body, exactly as on every other delivery — verify
+        it before parsing the multipart. `X-VoiceAI-Delivery` is the same on every retry of one
+        push: de-duplicate on it (a push your server took but answered too slowly is sent again).
+        A push that isn't taken (5xx, 408, 429, timeout) is retried from memory only, then
+        dropped; any push that fails sends `recording.failed` (reason no_destination, too_large,
+        refused, gone, unreachable, url_refused, memory_cap or lost_on_restart). A 410 Gone, or a
+        URL that fails its check for good, switches the endpoint off, as for every event. At most
+        a few pushes go to one endpoint at once (its `max_concurrency` when set). `recording.audio`
+        is sent when the file is ready, so it can arrive before `call.ended`. In send mode no
+        carrier is asked to record a transferred call, so its bridged part is not recorded. `send`
+        is refused 409 while this deployment hasn't switched send mode on (`sendModeAvailable`
+        false) or no enabled ORG-WIDE endpoint subscribes to `recording.audio` — an endpoint scoped
+        to one agent never receives the others' recordings, nor any softphone call's. Owner or
+        admin (the API key's own role too).
+      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [destination]
+              additionalProperties: false
+              properties:
+                destination: { type: string, enum: [telenow, send] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data: { $ref: '#/components/schemas/RecordingDelivery' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
 
   /api/orgs/{orgId}/recordings/{id}:
     get:
@@ -2003,7 +2208,11 @@ paths:
       description: >-
         https only, on a public host. The answer carries `signingSecret` in full only when this
         request made one (the first time, or `rotateSecret`); keep it — requests to your endpoint
-        are signed with it (`X-Telenow-Signature`). `timeoutMs` not sent means 1200.
+        are signed with it. `X-Telenow-Signature` is the HMAC-SHA256 hex of the raw body.
+        `X-Telenow-Signature-V2` is `t=<unix seconds>,v2=<hex>`, the HMAC-SHA256 hex of
+        `"v2\n" + t + "\n" + url + "\n" + raw body`, where `url` is this endpoint's address with no
+        query or fragment; refuse a `t` more than a few minutes from your clock and a `url` that is
+        not yours. `timeoutMs` not sent means 1200.
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       requestBody:
         required: true
@@ -2057,10 +2266,12 @@ paths:
   /api/orgs/{orgId}/inbound-routing/test:
     post:
       operationId: testInboundRouting
-      summary: Ask the org's endpoint about a pretend call to one of its pool numbers, and show what it answered.
+      summary: Ask the org's endpoint about a pretend call to one of its pool numbers, and report whether it answered.
       description: >-
-        Sends a real signed request to the endpoint. Always 200 once the number is the org's pool
-        number — whatever the endpoint did is in `answered` / `reason` / `decision`.
+        Sends a real signed request to the endpoint, with `carrier` `test` and a `call_id` starting
+        `test-`. Always 200 once the number is the org's pool number. Reports `answered`,
+        `decision.action`, `elapsedMs` and `reason`. What the answer held is never returned: the
+        other keys are still here for clients written before that, and are always empty or null.
       parameters: [{ $ref: '#/components/parameters/OrgId' }]
       requestBody:
         required: true
@@ -2087,7 +2298,7 @@ paths:
                     type: object
                     required: [request, answered, elapsedMs, reason, decision, fallbackAgentId]
                     properties:
-                      request: { type: object, additionalProperties: true, description: 'The request body sent to the endpoint.' }
+                      request: { type: object, additionalProperties: true, deprecated: true, description: 'Always empty.' }
                       answered: { type: boolean }
                       elapsedMs: { type: integer }
                       reason: { type: string, nullable: true, description: 'Why there is no decision (not configured, disabled, timed out, a bad answer, …).' }
@@ -2097,11 +2308,13 @@ paths:
                         required: [action, agentId, maxDurationSecs, variables, overrides]
                         properties:
                           action: { type: string, enum: [route, reject] }
-                          agentId: { type: string, format: uuid, nullable: true }
-                          maxDurationSecs: { type: integer, nullable: true }
-                          variables: { type: object, additionalProperties: true }
+                          agentId: { type: string, format: uuid, nullable: true, deprecated: true, description: 'Always null.' }
+                          maxDurationSecs: { type: integer, nullable: true, deprecated: true, description: 'Always null.' }
+                          variables: { type: object, additionalProperties: true, deprecated: true, description: 'Always empty.' }
                           overrides:
                             type: object
+                            deprecated: true
+                            description: Always empty.
                             properties:
                               ttsVoice: { type: string, nullable: true }
                               ttsProvider: { type: string, nullable: true }
@@ -2109,7 +2322,7 @@ paths:
                               language: { type: string, nullable: true }
                               opener: { type: string, nullable: true }
                               personaGender: { type: string, enum: [female, male, neutral], nullable: true }
-                      fallbackAgentId: { type: string, format: uuid, nullable: true, description: "The number's own agent, used when there is no decision." }
+                      fallbackAgentId: { type: string, format: uuid, nullable: true, deprecated: true, description: 'Always null.' }
         '400': { $ref: '#/components/responses/Error' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
@@ -2260,7 +2473,7 @@ paths:
                         type: array
                         items:
                           type: object
-                          required: [id, from_number, to_number, call_sid, assigned_to, assigned_to_email, created_at]
+                          required: [id, from_number, to_number, call_sid, assigned_to, assigned_to_email, created_at, reason]
                           properties:
                             id: { type: string, format: uuid }
                             from_number: { type: string }
@@ -2269,6 +2482,7 @@ paths:
                             assigned_to: { type: string, format: uuid, nullable: true }
                             assigned_to_email: { type: string, nullable: true }
                             created_at: { type: string, format: date-time }
+                            reason: { type: string, enum: [no_agent, out_of_credit, spend_cap, suspended], description: 'Why it was missed. Anything but no_agent is a call refused because the account cannot pay.' }
         '400': { $ref: '#/components/responses/BadBody' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
@@ -2395,7 +2609,7 @@ paths:
       description: >-
         Takes effect at once for this org: pending campaign calls to the number are suppressed and
         dials to it refused. A sub-account has its own list.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -2494,7 +2708,7 @@ paths:
       description: >-
         Up to 2 MB. A number already on the list keeps its reason. Lines without a dialable number
         are counted in `skipped`.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -2799,6 +3013,7 @@ paths:
         Prepaid accounts need enough purchased credit (free credits cannot buy numbers). The number
         is billed monthly from then on until released. Pass the price `searchNumbers` showed in
         `extras` (`monthlyRent`, `setupPrice`) when calling directly.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -3332,7 +3547,7 @@ paths:
       description: >-
         `status` restored: it is back, set up as it was, and charged. `status` requested: the
         carrier would not give it back automatically; Telenow staff were asked to recover it.
-      parameters: [{ $ref: '#/components/parameters/NumberId' }]
+      parameters: [{ $ref: '#/components/parameters/NumberId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       responses:
         '200':
           description: OK
@@ -3380,7 +3595,7 @@ paths:
     post:
       operationId: createCampaign
       summary: Create a campaign (as a draft — add targets, then start it).
-      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content: { application/json: { schema: { $ref: '#/components/schemas/CreateCampaignRequest' } } }
@@ -3615,7 +3830,7 @@ paths:
       operationId: uploadCampaignTargets
       summary: Add people from a CSV — a header row with phone_number (or phone); every other column becomes a variable.
       description: Up to 2 MB. Numbers on the do-not-call list (and ones already pending) are counted in `suppressed`.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/CampaignId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4022,7 +4237,7 @@ paths:
       operationId: pushCampaignTargetsV1
       summary: Add up to 1,000 targets; a target with an `id` already pushed under the same `source` is a duplicate.
       description: The campaign is checked first — not this org's (or deleted) is a 404, cancelled a 400 — even when every target is a duplicate.
-      parameters: [{ $ref: '#/components/parameters/CampaignId' }]
+      parameters: [{ $ref: '#/components/parameters/CampaignId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4340,7 +4555,7 @@ paths:
     post:
       operationId: createKnowledgeBase
       summary: 'Create a knowledge base.'
-      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4425,7 +4640,7 @@ paths:
     post:
       operationId: addKnowledgeText
       summary: Add a text document (embedded in the background).
-      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4447,7 +4662,7 @@ paths:
     post:
       operationId: uploadKnowledgeFile
       summary: Add a file — PDF, DOCX, TXT or Markdown (embedded), or CSV, JSON or XLSX (indexed as a table). Up to 20 MB.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4469,7 +4684,7 @@ paths:
     post:
       operationId: addKnowledgeUrl
       summary: Add a web page (https, a public host, HTML or text, up to 5 MB), embedded in the background.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/KbId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -4842,6 +5057,10 @@ paths:
     post:
       operationId: previewVoice
       summary: A short WAV clip of a text-to-speech voice (on your key in `config.apiKey`, or Telenow's).
+      description: >-
+        Your own cloned voices play, named by `profile:<voiceId>` or by their provider voice id. A voice
+        that is another account's clone is spoken in the provider's default voice, whether it is named in
+        `voice` or anywhere in `config`, from the moment that clone exists.
       parameters: [{ name: provider, in: path, required: true, schema: { type: string } }]
       requestBody:
         required: true
@@ -4954,7 +5173,12 @@ paths:
   /api/providers/tts/{provider}/library/add:
     post:
       operationId: addLibraryVoice
-      summary: "Add a shared library voice to the ElevenLabs account (yours with `apiKey`, else Telenow's)."
+      summary: "Add a shared library voice to your own ElevenLabs account (send its key as `apiKey`)."
+      description: >-
+        The voice is added to the ElevenLabs account whose key you send as `apiKey`, and uses one of that
+        account's voice slots. Without your own key the answer is `400` with `code: library_own_key_required`
+        and nothing is added: library voices are no longer added to Telenow's account. Voices added
+        before keep working.
       parameters: [{ name: provider, in: path, required: true, schema: { type: string } }]
       requestBody:
         required: true
@@ -5186,6 +5410,12 @@ paths:
     post:
       operationId: cloneVoice
       summary: Clone the profile's voice into a provider (on your key with `apiKey`, else Telenow's — 50 per org).
+      description: >-
+        Cloning a profile again on the same provider, with the same key (or again on Telenow's), replaces
+        its clone: the new voice is stored, then the previous one is deleted at the provider with that key.
+        Agents that name the clone as `profile:<voiceId>` speak the new voice; the previous provider voice
+        id stops being yours. If the provider keeps the previous voice, Telenow's team is told to remove it;
+        the answer is the new clone either way. A clone that fails leaves the previous one as it was.
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/VoiceId' }]
       requestBody:
         required: true
@@ -5216,7 +5446,8 @@ paths:
         - { $ref: '#/components/parameters/VoiceId' }
         - { name: provider, in: path, required: true, schema: { type: string } }
       requestBody:
-        required: true
+        required: false
+        description: May be left out, which is the same as {} (the clone made on Telenow's key). A body that is sent must be this JSON object.
         content:
           application/json:
             schema:
@@ -5397,7 +5628,10 @@ paths:
     post:
       operationId: createWebhookEndpoint
       summary: Add a receiver (https, a public host) for some events (default every event).
-      parameters: [{ $ref: '#/components/parameters/OrgId' }]
+      description: >-
+        Leaving `events` out means every event (`["*"]`). An empty list, or a name that is not an
+        event, is refused with 400 and the valid names; nothing is created.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -5448,14 +5682,59 @@ paths:
         '404': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/BadBody' }
   /api/orgs/{orgId}/webhooks/{id}:
+    patch:
+      operationId: editWebhookEndpoint
+      summary: Change which events a receiver gets, and the extras on `call.ended`.
+      description: >-
+        A field left out keeps its value. The URL, the agent scope and the signing secret cannot be
+        changed here and a body naming one is refused; the signing secret stays the same and is not
+        returned. Deliveries already queued still go out. Owner, admin or developer.
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                events: { type: array, minItems: 1, items: { type: string }, description: 'The whole new list: event names, or `*` for every event.' }
+                includeRecording: { type: boolean }
+                includeTranscript: { type: boolean }
+      responses:
+        '200':
+          description: The endpoint as it now is.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [endpoint]
+                    properties:
+                      endpoint: { $ref: '#/components/schemas/WebhookEndpoint' }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
     delete:
       operationId: disableWebhookEndpoint
       summary: Stop sending to a receiver (its delivery history stays readable).
+      description: >-
+        Owner or admin. While the org's call recordings are sent to its webhooks and not kept in
+        Telenow, the last receiver for all agents that names `recording.audio` cannot be deleted:
+        409, nothing changes.
       parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }]
       responses:
         '200': { $ref: '#/components/responses/Done' }
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /api/orgs/{orgId}/webhooks/{id}/deliveries:
     get:
       operationId: listWebhookDeliveries
@@ -5530,7 +5809,7 @@ paths:
     post:
       operationId: sendWebhookTest
       summary: Send a sample of one event to the receiver.
-      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }]
+      parameters: [{ $ref: '#/components/parameters/OrgId' }, { $ref: '#/components/parameters/WebhookId' }, { $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -6015,6 +6294,29 @@ paths:
                     description: Set when the key's org is a sub-account - its calls are billed to this parent.
         '401': { $ref: '#/components/responses/Error' }
 
+  /api/v1/me/revoke:
+    post:
+      operationId: revokeThisKey
+      summary: The calling key revokes itself (`telenow logout --revoke`).
+      description: >
+        Revokes the API key that makes this request, whatever its role (a viewer key too): it gives up
+        only its own access. Revoking any other key is the API keys page's (owner or admin). The next
+        request with this key gets 401. A key past its expiry (keys a CLI login made) gets 401 with
+        `code: api_key_expired` before it reaches here.
+      security: [{ ApiKeyAuth: [] }]
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked, keyId]
+                properties:
+                  revoked: { type: boolean, example: true }
+                  keyId: { type: string, format: uuid }
+        '401': { $ref: '#/components/responses/Error' }
+
   /api/v1/hooks:
     get:
       operationId: listHooks
@@ -6251,6 +6553,7 @@ paths:
         answers 200, with an apology as the `reply`; a provider that cannot be set
         up at all (no key configured) is a 502.
       security: [{ ApiKeyAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
       requestBody:
         required: true
         content:
@@ -6342,7 +6645,7 @@ paths:
           description: Also read as `event`.
           schema:
             type: string
-            enum: [call.started, call.ended, call.completed, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment, billing.spend_state_changed]
+            enum: [call.started, call.ended, call.completed, call.machine_detected, call.dtmf, transcript.ready, tool.invoked, recording.ready, recording.audio, recording.failed, call.analyzed, whatsapp.message.received, whatsapp.message.status, whatsapp.account.health, billing.invoice_issued, billing.payment_overdue, billing.account_suspended, billing.number_renewal_due, billing.number_renewed, billing.number_renewal_failed, billing.number_release_pending, billing.number_released_nonpayment, billing.spend_state_changed]
       responses:
         '200':
           description: OK
@@ -6935,6 +7238,252 @@ paths:
         '401': { $ref: '#/components/responses/Error' }
         '403': { $ref: '#/components/responses/Error' }
 
+  # ── `telenow login` in the browser: the OAuth device authorization grant (RFC 8628). The CLI
+  #    starts a request and polls `token`; the person approves it on the dashboard's
+  #    /cli/authorize page, which uses the three `requests` routes with their own login. The key is
+  #    minted at the first poll after the approval and is in that one answer only. Not for an API
+  #    key: `start` and `token` take no credential, the rest a dashboard login. ──
+  /api/cli-login/start:
+    post:
+      operationId: startCliLogin
+      summary: Start a CLI sign-in (RFC 8628 device authorization request).
+      description: >
+        No credential. Each address may start as many sign-ins as it may make sign-in attempts
+        (429 past that). The CLI shows `userCode` and opens `verificationUriComplete` (or prints
+        it), then polls `/api/cli-login/token` with `deviceCode` every `interval` seconds until
+        `expiresIn` runs out. `deviceCode` is the CLI's secret: keep it out of logs and URLs.
+        Each field of the body is optional, trimmed, stripped of control characters and cut to 253
+        characters; the approval page shows them as what the CLI said about itself.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname: { type: string, example: navins-mbp }
+                os: { type: string, example: darwin 24.2.0 arm64 }
+                cliVersion: { type: string, example: 0.7.0 }
+      responses:
+        '201':
+          description: Started. Never cached (`Cache-Control - no-store`).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [deviceCode, userCode, verificationUri, verificationUriComplete, expiresIn, interval]
+                    properties:
+                      deviceCode: { type: string, description: 'The CLI''s secret for this request: 32 random bytes, base64url.' }
+                      userCode: { type: string, example: WDJB-MJHT, description: '8 letters of RFC 8628''s consonant alphabet, with a dash. Case and the dash are ignored when typed.' }
+                      verificationUri: { type: string, format: uri, example: 'https://app.telenow.ai/cli/authorize' }
+                      verificationUriComplete: { type: string, format: uri, example: 'https://app.telenow.ai/cli/authorize?code=WDJB-MJHT' }
+                      expiresIn: { type: integer, example: 600, description: Seconds the request lives (CLI_LOGIN_TTL_SECS). }
+                      interval: { type: integer, example: 5, description: Seconds to wait between polls. }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/cli-login/token:
+    post:
+      operationId: pollCliLogin
+      summary: Poll a CLI sign-in for its API key (RFC 8628 device access token request).
+      description: >
+        No credential: the device code is the proof. Answers the key ONCE, at the first poll after
+        the person approved, and never again (a second or concurrent poll gets `expired_token`).
+        Otherwise HTTP 400 with an RFC 8628 error - `authorization_pending` (keep polling),
+        `slow_down` (polled sooner than `interval`: add 5 seconds to it from now on),
+        `access_denied` (the person denied it, or lost the right to approve it), `expired_token`
+        (expired, already used, or unknown) - or `invalid_request` (no `deviceCode`). Never
+        cached. Failed polls from one address are limited (429 past that). The key is an ordinary
+        org API key: it is listed and revoked on the API keys page with the others, and expires
+        at `expiresAt` (null when the server's CLI_LOGIN_KEY_TTL_DAYS is 0).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceCode]
+              properties:
+                deviceCode: { type: string }
+      responses:
+        '200':
+          description: Approved - the API key, this once.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [apiKey, keyId, keyName, keyRole, orgId, orgName, expiresAt]
+                    properties:
+                      apiKey: { type: string, description: 'The key''s secret, for the X-API-Key header. Shown only here.' }
+                      keyId: { type: string, format: uuid }
+                      keyName: { type: string, example: 'telenow CLI — navins-mbp — 2026-11-08' }
+                      keyRole: { type: string, enum: [owner, admin, developer, viewer] }
+                      orgId: { type: string, format: uuid }
+                      orgName: { type: string }
+                      expiresAt: { type: string, format: date-time, nullable: true }
+        '400':
+          description: Not (yet) - an RFC 8628 error.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error:
+                    type: string
+                    enum: [authorization_pending, slow_down, access_denied, expired_token, invalid_request]
+                  error_description: { type: string }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/cli-login/requests/{userCode}:
+    get:
+      operationId: getCliLoginRequest
+      summary: A pending CLI sign-in, for the approval page, and the orgs the person may approve it for.
+      description: >
+        A dashboard login (not an admin's view-as, a reseller session or an assistant). 404 when the
+        code names no pending request (unknown, expired or already decided); each miss counts
+        against the person's own budget (429 past it). `orgs` lists only the orgs where the person
+        may create API keys (owner, admin or developer, not through a solution-partner seat, and
+        not hidden by a custom access role); `maxKeyRole` is the highest role a key may carry there.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: userCode
+          in: path
+          required: true
+          description: The code the CLI showed, with or without its dash, any case.
+          schema: { type: string, example: WDJB-MJHT }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [userCode, hostname, os, cliVersion, ip, createdAt, expiresAt, orgs]
+                    properties:
+                      userCode: { type: string, example: WDJB-MJHT }
+                      hostname: { type: string, nullable: true, description: What the CLI said. }
+                      os: { type: string, nullable: true, description: What the CLI said. }
+                      cliVersion: { type: string, nullable: true, description: What the CLI said. }
+                      ip: { type: string, nullable: true, description: The address the request came from. }
+                      createdAt: { type: string, format: date-time }
+                      expiresAt: { type: string, format: date-time }
+                      defaultKeyName: { type: string, description: 'The key''s name unless the person types another.' }
+                      orgs:
+                        type: array
+                        items:
+                          type: object
+                          required: [id, name, myRole, maxKeyRole]
+                          properties:
+                            id: { type: string, format: uuid }
+                            name: { type: string }
+                            myRole: { type: string, enum: [owner, admin, developer] }
+                            maxKeyRole: { type: string, enum: [owner, admin, developer] }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/cli-login/requests/{userCode}/approve:
+    post:
+      operationId: approveCliLogin
+      summary: Approve a CLI sign-in - its key is minted at the CLI's next poll.
+      description: >
+        A dashboard login of a member who may create API keys in `orgId` (owner, admin or
+        developer, not through a solution-partner seat, not hidden by a custom access role), read
+        fresh. 403 `cli_login_not_allowed` otherwise (and for an admin's view-as, a reseller session
+        or an assistant); 403 `cli_login_role_too_high` for a `role` above the person's own; 400
+        for a role no key can carry or a `name` over 120 characters; 404 when no pending request
+        has the code; 409 `cli_login_decided` when it was approved or denied already.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: userCode
+          in: path
+          required: true
+          description: The code the CLI showed, with or without its dash, any case.
+          schema: { type: string, example: WDJB-MJHT }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orgId]
+              properties:
+                orgId: { type: string, format: uuid }
+                role: { type: string, enum: [owner, admin, developer, viewer], default: developer }
+                name: { type: string, maxLength: 120, description: 'The key''s name; default `telenow CLI — <hostname> — <date>`.' }
+      responses:
+        '200':
+          description: Approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: object
+                    required: [orgId, role]
+                    properties:
+                      orgId: { type: string, format: uuid }
+                      role: { type: string, enum: [owner, admin, developer, viewer] }
+        '400': { $ref: '#/components/responses/Error' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/BadBody' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /api/cli-login/requests/{userCode}/deny:
+    post:
+      operationId: denyCliLogin
+      summary: Deny a CLI sign-in - the CLI is told `access_denied`.
+      description: >
+        Any dashboard login that has the code (not an admin's view-as, a reseller session or an
+        assistant). 404 when no pending request has the code; 409 `cli_login_decided` when it was
+        decided already.
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - name: userCode
+          in: path
+          required: true
+          description: The code the CLI showed, with or without its dash, any case.
+          schema: { type: string, example: WDJB-MJHT }
+      responses:
+        '200':
+          description: Denied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success]
+                properties:
+                  success: { type: boolean, example: true }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -7054,6 +7603,21 @@ components:
       required: false
       description: '`edit` returns provider keys in plaintext — honoured only for an owner or admin key; others get them masked.'
       schema: { type: string, enum: [edit] }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Makes a retry safe (POST only; any string, e.g. a UUID — one per operation, never reused for
+        another). The first answer with a 2xx status is kept for 24 hours, per credential; the same
+        key with the same method, path and body gets that answer again — its status, headers and
+        bytes — with `Idempotent-Replay: true`, and nothing runs a second time. The same key with a
+        different body is 422; while the first request is still running, a repeat waits up to 5
+        seconds for its answer, then gets 409 with `Retry-After: 5` (both plain text). An answer
+        that is not 2xx is not kept, so a retry runs again. With this header the body is read whole
+        first, up to 5 MiB: a larger one is 413 (`body too large`) and nothing runs, so send a
+        larger upload without it.
+      schema: { type: string }
   responses:
     Error:
       description: Error
@@ -7300,6 +7864,21 @@ components:
       content:
         text/plain:
           schema: { type: string }
+    AgentVersionConflict:
+      description: >-
+        The agent was saved since the version this save names (`If-Match` or `expectedVersion`), so
+        nothing was written. Read it again (`currentVersion` is the version listAgentVersions now
+        lists first) and save on top of that.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [success, error, code, currentVersion]
+            properties:
+              success: { type: boolean, example: false }
+              error: { type: string }
+              code: { type: string, enum: [agent_version_conflict] }
+              currentVersion: { type: integer, example: 13 }
   schemas:
     ErrorBody:
       type: object
@@ -7563,12 +8142,12 @@ components:
         billableSecs: { type: integer, nullable: true, description: Seconds the carrier billed; null when none reported }
         startTime: { type: string, format: date-time }
         endTime: { type: string, format: date-time, nullable: true }
-        variables: { type: object, nullable: true, additionalProperties: true, description: The call's variables, as given. }
+        variables: { type: object, nullable: true, additionalProperties: true, description: "The call's variables, as given." }
         analysis: { type: object, nullable: true, description: Present only if post-call analysis already finished }
         callRecord: { allOf: [{ $ref: '#/components/schemas/CallRecord' }], description: Present only when the agent kept a call record }
         campaignId: { type: string, format: uuid, nullable: true }
         campaignTargetId: { type: string, format: uuid, nullable: true }
-        attempt: { type: integer, nullable: true, description: This target's dial number, 1 for the first }
+        attempt: { type: integer, nullable: true, description: "This target's dial number, 1 for the first" }
     Hook:
       type: object
       required: [id, target_url, events, agent_id, include_recording, include_transcript, source, created_at]
@@ -7605,9 +8184,11 @@ components:
           type: array
           items: { type: string }
           description: >-
-            21 valid names, or "*" for all (no events subscribes to all). Session-scoped (carry sessionId/agentId):
+            23 valid names, or "*" for all (no events subscribes to all). Session-scoped (carry sessionId/agentId):
             call.started, call.ended, call.completed, call.machine_detected, call.dtmf,
-            transcript.ready, tool.invoked, recording.ready, call.analyzed.
+            transcript.ready, tool.invoked, recording.ready, recording.audio, recording.failed, call.analyzed.
+            `recording.audio` is the recording itself (multipart, see setRecordingDelivery) and is sent only
+            to endpoints that name it — never to "*".
             Org-scoped (NO agentId — an agent-scoped hook never receives these):
             whatsapp.message.received, whatsapp.message.status,
             whatsapp.account.health, billing.invoice_issued,
@@ -7639,6 +8220,13 @@ components:
           type: object
           additionalProperties: { type: string }
           description: 'Context variables — first message of a session only.'
+        optionId:
+          type: string
+          example: plan_pro
+          description: >
+            The customer tapped an option the previous reply's `ui` offered: send that option's `id`
+            here and its `title` as `input`. The agent is told which option was chosen. An id the
+            session did not offer is ignored, and the turn is `input` alone.
     ChatReply:
       type: object
       required: [sessionId, reply, turn, identifier]
@@ -7647,6 +8235,52 @@ components:
         reply: { type: string, description: "The agent's full reply (tool calls resolved)." }
         turn: { type: integer, description: 'User turns this session has seen (1-based).' }
         identifier: { type: string }
+        ui: { $ref: '#/components/schemas/ChatReplyUi' }
+    ChatReplyUi:
+      type: object
+      required: [kind, shownAs]
+      description: >
+        What the agent attached to its reply: options for the customer to tap, one link button, or
+        one file from the organisation's file library. Present only when the agent's owner turned
+        on rich replies or chose files for the agent, and the agent attached something; absent
+        otherwise. Draw it under `reply`; do not repeat it in the text. A `kind` you do not know
+        (more may be added) can be ignored: `reply` reads on its own.
+      properties:
+        kind: { type: string, enum: [options, link, file], description: 'What was attached.' }
+        shownAs:
+          type: string
+          enum: [buttons, list, link_button, file, text]
+          description: >
+            How to draw it: `buttons` for a few short choices, `list` for more or with descriptions,
+            `link_button` for the link, `file` for the file (a preview for an image, a download
+            otherwise, from `url`). `text` means it is already inside `reply` as numbered lines
+            (a reply with no words of its own), so draw nothing more.
+        options:
+          type: array
+          description: 'kind `options`: the choices, in order.'
+          items: { $ref: '#/components/schemas/ChatReplyOption' }
+        menuLabel: { type: string, description: "kind `options`: the agent's label for a button that opens them as a menu, when it gave one." }
+        label: { type: string, description: "kind `link`: the words on the link's button." }
+        url:
+          type: string
+          format: uri
+          description: >
+            kind `link`: an https link from the agent's own instructions, knowledge or tools.
+            kind `file`: a signed link to the file, which works until `urlExpiresAt` (a day by
+            default) and opens this one file only. Every read of the reply or the session's
+            messages gives a fresh one.
+        id: { type: string, format: uuid, description: 'kind `file`: the library file''s id.' }
+        name: { type: string, description: 'kind `file`: the file''s name, as the customer sees it.' }
+        mime: { type: string, example: application/pdf, description: 'kind `file`: its type.' }
+        sizeBytes: { type: integer, format: int64, description: 'kind `file`: its size.' }
+        urlExpiresAt: { type: string, format: date-time, description: 'kind `file`: when `url` stops working.' }
+    ChatReplyOption:
+      type: object
+      required: [id, title]
+      properties:
+        id: { type: string, description: 'Send it back as `optionId` when the customer taps this option.' }
+        title: { type: string, description: 'What the customer sees; send it as `input` when they tap it.' }
+        description: { type: string }
     ChatMessage:
       type: object
       required: [role, content, createdAt]
@@ -7654,6 +8288,7 @@ components:
         role: { type: string, example: assistant }
         content: { type: string }
         createdAt: { type: string, format: date-time }
+        ui: { $ref: '#/components/schemas/ChatReplyUi' }
     ChatTranscript:
       type: object
       required: [sessionId, messages]
@@ -7754,7 +8389,7 @@ components:
         callId: { type: string, description: The carrier's call id. }
         status: { type: string, example: active }
         callStatus: { type: string, description: What the carrier said when it took the dial. }
-        phoneNumber: { type: string, description: The number dialled, as sent. }
+        phoneNumber: { type: string, description: 'The number dialled, as sent.' }
     QueuedCallResult:
       type: object
       description: >
@@ -7786,6 +8421,13 @@ components:
         status: { type: string }
         transport: { type: string, example: websocket, description: 'Agent mode: how the client joins (`websocket`). Not on a widget session.' }
         embedSnippet: { type: string, description: 'Agent-mode only: ready-to-paste WebAgentWidget embed script.' }
+        recordingDestination:
+          type: string
+          enum: [telenow, send]
+          description: >-
+            Agent mode: where this call's recording goes (getRecordingDelivery). In `send` mode the
+            server's own copy is handed to you and nothing is stored, so a client that records its
+            own copy must not upload it (uploadRecording refuses it with 409).
         # Manual/softphone mode (mode: "manual") additionally returns:
         callId: { type: string, description: 'Carrier call id (manual mode).' }
         callMode: { type: string, example: manual, description: '"manual" for softphone bridges.' }
@@ -7803,6 +8445,14 @@ components:
         sttProvider: { type: string }
         ttsProvider: { type: string }
         ttsVoice: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: >-
+            The flow graph (`flow`), variables, tools and other builder settings — the `metadata` an
+            agent is read with. A save REPLACES it whole: send the whole object you read, with your
+            change in it; one that leaves keys out drops them. Masked secrets sent back as read are
+            kept as stored.
     AgentRecord:
       type: object
       description: >-
@@ -7840,6 +8490,40 @@ components:
         updated_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true }
         partner_client_id: { type: string, format: uuid, nullable: true }
+    AgentSummary:
+      type: object
+      description: >-
+        One row of `GET /api/agents?fields=summary`. Keys are snake_case and always present. Read a whole agent with
+        `GET /api/agents/{id}` before changing it: this row is for reading, and saving its `metadata` back would overwrite the real one.
+      required: [id, name, description, is_active, llm_model, stt_provider, tts_provider, tts_voice, total_sessions, total_messages, partner_client_id, metadata]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        is_active: { type: boolean }
+        llm_model: { type: string }
+        stt_provider: { type: string }
+        tts_provider: { type: string }
+        tts_voice: { type: string }
+        total_sessions: { type: integer }
+        total_messages: { type: integer }
+        partner_client_id: { type: string, format: uuid, nullable: true }
+        metadata:
+          type: object
+          description: A few keys of the agent's metadata, each present only when it is set.
+          properties:
+            environment: { type: string, description: 'As saved: `dev`, `staging` or `prod` when set from the dashboard.' }
+            logoKey: { type: string }
+            icon: { type: string }
+            configDraft: { type: boolean, enum: [true], description: 'Present when the agent has an unpublished config. Not the draft itself.' }
+            flowDraft: { type: boolean, enum: [true], description: 'Present when the agent has an unpublished flow. Not the draft itself.' }
+            flow:
+              type: object
+              description: 'Present when the agent has a published flow. Not the graph, and the lists are not its counts: `nodes` holds up to 2 empty objects and `edges` up to 1, enough to tell a flow with no nodes, one node or more, and with or without edges.'
+              required: [nodes, edges]
+              properties:
+                nodes: { type: array, maxItems: 2, items: { type: object } }
+                edges: { type: array, maxItems: 1, items: { type: object } }
     AgentStats:
       type: object
       required: [totalSessions, totalMessages, totalDuration, avgSessionDuration, avgMessagesPerSession, avgServerMs, avgSttMs, avgLlmMs, avgTtsMs, avgNetRttMs, avgFlowMs, latencySamples]
@@ -8137,7 +8821,7 @@ components:
                 type: object
                 required: [kind, provider, model, voice, route]
                 properties:
-                  kind: { type: string, enum: [llm, stt, tts] }
+                  kind: { type: string, enum: [llm, stt, tts, telephony] }
                   provider: { type: string }
                   model: { type: string, nullable: true }
                   voice: { type: string, nullable: true }
@@ -8198,7 +8882,7 @@ components:
     CallCharge:
       type: object
       description: What one call was charged, by component (decimal strings, USD).
-      required: [sessionId, orgId, callType, llmUsd, sttUsd, ttsUsd, telephonyUsd, platformAiUsd, postCallAnalysisUsd, simulationUsd, embeddingUsd, platformFeeUsd, totalChargeUsd, hasEstimates, breakdown, ratedAt]
+      required: [sessionId, orgId, callType, llmUsd, sttUsd, ttsUsd, telephonyUsd, platformAiUsd, postCallAnalysisUsd, simulationUsd, embeddingUsd, platformFeeUsd, featureSurchargeUsd, totalChargeUsd, hasEstimates, breakdown, ratedAt]
       properties:
         sessionId: { type: string, format: uuid }
         orgId: { type: string, format: uuid }
@@ -8212,9 +8896,10 @@ components:
         simulationUsd: { type: string }
         embeddingUsd: { type: string }
         platformFeeUsd: { type: string }
-        totalChargeUsd: { type: string }
+        featureSurchargeUsd: { type: string, description: 'Premium call features (SIP-direct, WebRTC, a turn-taking tier, defend) and surcharge rules, charged per minute on top of the platform fee — its own line, "0" when none applied. When one did, `breakdown.featureSurcharges` lists each.' }
+        totalChargeUsd: { type: string, description: 'The ten components above, summed.' }
         hasEstimates: { type: boolean, description: 'Some component was priced from an estimate.' }
-        breakdown: { type: object, additionalProperties: true, description: 'The rated events (`events`) and the fee rule applied.' }
+        breakdown: { type: object, additionalProperties: true, description: 'Each part of the phone call (`phoneLegs`: carrier, number, billed seconds, per-minute price, charge; `pendingPhoneLegs` while a carrier record is awaited), the rated events (`events`) and the fee rule applied.' }
         ratedAt: { type: string, format: date-time }
     CallComment:
       type: object
@@ -8266,6 +8951,20 @@ components:
           properties:
             ticket: { type: string, description: 'Single use, 30 s.' }
             wsUrl: { type: string, description: 'The WebSocket to open (the ticket is in it).' }
+    RecordingDelivery:
+      type: object
+      required: [destination, sendModeAvailable, audioEndpoints, ready]
+      properties:
+        destination: { type: string, enum: [telenow, send] }
+        sendModeAvailable: { type: boolean, description: 'Whether this deployment lets an org switch send mode on.' }
+        audioEndpoints:
+          type: object
+          required: [orgWide, agentScoped]
+          description: Enabled endpoints that subscribe to recording.audio by name.
+          properties:
+            orgWide: { type: integer, description: 'With no agent, the parent account''s org-wide ones included: they receive every recording.' }
+            agentScoped: { type: integer, description: 'Scoped to one agent: they receive only that agent''s recordings.' }
+        ready: { type: boolean, description: 'False only in send mode with no org-wide endpoint.' }
     Recording:
       type: object
       description: A stored recording. Keys are snake_case and always present.
