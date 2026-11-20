@@ -126,7 +126,9 @@ bundle cost at load.
 Notes for WebRTC calls: LiveKit handles mic capture and agent playback natively,
 so the `mediaAdapter` / half-duplex options and per-frame `onLevel` don't apply,
 and `sendText()` (voice-only transport) returns `false`. Everything else — live
-transcripts, barge-in, mute, hang-up — works the same.
+transcripts, barge-in, mute, hang-up, and notes and activity pings
+(`sendContext`, `sendActivity`, `autoActivity`), carried on the call's data channel —
+works the same.
 
 ## Turn-taking: duplex vs half-duplex
 

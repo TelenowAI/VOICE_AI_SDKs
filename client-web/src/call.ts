@@ -44,8 +44,18 @@ export interface TelenowSession {
  */
 interface LkRoomLike {
   disconnect(): Promise<void>;
-  localParticipant: { setMicrophoneEnabled(enabled: boolean): Promise<unknown> };
+  localParticipant: {
+    setMicrophoneEnabled(enabled: boolean): Promise<unknown>;
+    publishData(data: Uint8Array, options: { reliable?: boolean; topic?: string }): Promise<void>;
+  };
 }
+
+/**
+ * The data-channel topic notes and activity pings travel on during a WebRTC call — the web
+ * socket's own JSON, answered on the topic the server sends every event on (Telenow reads it in
+ * `providers/telephony/livekit.rs`, `live_context::client_events::DATA_TOPIC`).
+ */
+const CONTEXT_TOPIC = 'tn-context';
 
 export interface CallAudioOptions {
   encoding?: 'pcm16' | 'mulaw';
@@ -134,7 +144,8 @@ export class TelenowContextError extends Error {
     /**
      * The stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
      * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK
-     * `not_connected`, `connection_lost`, `call_ended`, `unsupported_transport`.
+     * `not_connected`, `connection_lost`, `call_ended` (`unsupported_transport`, which older
+     * versions sent on a WebRTC call, is no longer sent: notes and pings go on its data channel).
      */
     readonly reason: string,
     /** For `too_large`: how many of the note's characters (Unicode code points) would fit right now. */
@@ -257,6 +268,11 @@ class BrowserMedia implements MediaAdapter {
 }
 
 export class TelenowCall {
+  /**
+   * @internal How a WebRTC call loads `livekit-client` (lazily, so WS-only apps never fetch it).
+   * Replaced only by tests. Typed `unknown` so the LiveKit types never reach the published `.d.ts`.
+   */
+  static loadLiveKit: () => Promise<unknown> = () => import('livekit-client');
   private socket: ReconnectingSocket | null = null;
   /** LiveKit room + attached agent-audio elements — set only on a WebRTC call. */
   private room: LkRoomLike | null = null;
@@ -383,8 +399,6 @@ export class TelenowCall {
    * Resolves with when the agent will see it; rejects with a {@link TelenowContextError}.
    */
   sendContext(text: string, opts?: ContextOptions): Promise<ContextDelivery> {
-    // WebRTC has no server-bound data channel for this yet.
-    if (this.room) return Promise.reject(new TelenowContextError('unsupported_transport'));
     const frame = {
       event: 'contextual_update',
       text: wellFormed(text),
@@ -392,11 +406,11 @@ export class TelenowCall {
       ...(opts?.respond ? { respond: opts.respond } : {}),
     };
     return new Promise((resolve, reject) => {
-      if (!this.socket?.send(JSON.stringify(frame))) {
-        reject(new TelenowContextError('not_connected'));
-        return;
+      const owed = { resolve, reject };
+      this.pendingContext.push(owed);
+      if (!this.sendContextFrame(frame, () => this.dropOwed(this.pendingContext, owed))) {
+        this.dropOwed(this.pendingContext, owed);
       }
-      this.pendingContext.push({ resolve, reject });
     });
   }
 
@@ -406,16 +420,41 @@ export class TelenowCall {
    * `null` when no check-in is armed. See also the `autoActivity` option.
    */
   sendActivity(): Promise<number | null> {
-    if (this.room) return Promise.reject(new TelenowContextError('unsupported_transport'));
     return new Promise((resolve, reject) => {
       const sentAt = Date.now();
-      if (!this.socket?.send(JSON.stringify({ event: 'user_activity' }))) {
-        reject(new TelenowContextError('not_connected'));
+      const owed = { resolve, reject, sentAt };
+      this.pendingActivity.push(owed);
+      if (!this.sendContextFrame({ event: 'user_activity' }, () => this.dropOwed(this.pendingActivity, owed))) {
+        this.dropOwed(this.pendingActivity, owed);
         return;
       }
       this.lastActivityAt = sentAt;
-      this.pendingActivity.push({ resolve, reject, sentAt });
     });
+  }
+
+  /**
+   * A note or an activity ping to the server: on the web socket, or — a WebRTC call has no socket
+   * to the server — the room's reliable data channel under {@link CONTEXT_TOPIC}, in order. False
+   * when the call cannot carry it now. `lost`: a WebRTC send that failed after it was handed over
+   * (no reply will come for it).
+   */
+  private sendContextFrame(frame: Record<string, unknown>, lost: () => void): boolean {
+    if (this.room) {
+      if (this._state !== 'live') return false;
+      this.room.localParticipant
+        .publishData(new TextEncoder().encode(JSON.stringify(frame)), { reliable: true, topic: CONTEXT_TOPIC })
+        .catch(lost);
+      return true;
+    }
+    return this.socket?.send(JSON.stringify(frame)) ?? false;
+  }
+
+  /** A reply that will never come: out of the queue, so the next reply pairs with the next send. */
+  private dropOwed<T extends { reject: (e: Error) => void }>(queue: T[], owed: T): void {
+    const i = queue.indexOf(owed);
+    if (i < 0) return;
+    queue.splice(i, 1);
+    owed.reject(new TelenowContextError('not_connected'));
   }
 
   /** `autoActivity`: watch for the user interacting with the page. */
@@ -518,7 +557,7 @@ export class TelenowCall {
     // lazily here, so WebSocket-only apps never fetch it at runtime.
     let lk: typeof import('livekit-client');
     try {
-      lk = await import('livekit-client');
+      lk = (await TelenowCall.loadLiveKit()) as typeof import('livekit-client');
     } catch (e) {
       throw new Error(
         `Failed to load the WebRTC engine (livekit-client): ${(e as Error).message}. ` +
@@ -540,24 +579,21 @@ export class TelenowCall {
       track.detach().forEach((el) => el.remove());
     });
     room.on(lk.RoomEvent.DataReceived, (payload: Uint8Array) => {
-      // Transcript (and other UI events) arrive over the data channel — same JSON
-      // the WS path delivers, so it feeds the identical `onTranscript` callback.
+      // Transcripts and the replies to notes and pings arrive over the data channel — the same
+      // JSON the WS path delivers, so they feed the identical callbacks and settle the same queue.
       let m: Record<string, unknown>;
       try {
         m = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
       } catch {
         return;
       }
-      if (m.event === 'transcript') {
-        this.opts.onTranscript?.({
-          role: String(m.role ?? ''),
-          text: String(m.text ?? ''),
-          isFinal: Boolean(m.isFinal),
-        });
-      }
+      if (m.event === 'transcript') this.onTranscriptEvent(m);
+      else this.settleReply(m);
     });
     room.on(lk.RoomEvent.Disconnected, () => this.teardown('ended'));
     await room.connect(sess.livekitUrl, sess.token);
+    this.resetActivity();
+    if (this.opts.autoActivity) this.attachAutoActivity();
     await room.localParticipant.setMicrophoneEnabled(!this._muted);
     // start() is invoked from a user gesture, so browser autoplay is permitted.
     if (!room.canPlaybackAudio) {
@@ -625,17 +661,29 @@ export class TelenowCall {
       // Echo for server-measured web⇄server RTT (powers the latency breakdown).
       this.socket?.send(JSON.stringify({ event: 'pong', t: m.t }));
     } else if (ev === 'transcript') {
-      // The conversation moved on: a hold or an acknowledgement may be over, so `autoActivity`
-      // probes again on the next interaction.
-      if (this.checkinAfterMs === null) this.checkinAfterMs = undefined;
-      this.opts.onTranscript?.({
-        role: String(m.role ?? ''),
-        text: String(m.text ?? ''),
-        isFinal: Boolean(m.isFinal),
-      });
+      this.onTranscriptEvent(m);
     } else if (ev === 'session_end') {
       this.stop();
-    } else if (ev === 'context_ack' || ev === 'context_rejected') {
+    } else {
+      this.settleReply(m);
+    }
+  }
+
+  private onTranscriptEvent(m: Record<string, unknown>): void {
+    // The conversation moved on: a hold or an acknowledgement may be over, so `autoActivity`
+    // probes again on the next interaction.
+    if (this.checkinAfterMs === null) this.checkinAfterMs = undefined;
+    this.opts.onTranscript?.({
+      role: String(m.role ?? ''),
+      text: String(m.text ?? ''),
+      isFinal: Boolean(m.isFinal),
+    });
+  }
+
+  /** A reply to a note or an activity ping (either transport): it settles the oldest one owed. */
+  private settleReply(m: Record<string, unknown>): void {
+    const ev = m.event as string | undefined;
+    if (ev === 'context_ack' || ev === 'context_rejected') {
       const p = this.pendingContext.shift();
       if (ev === 'context_ack') {
         const d = m.delivery;

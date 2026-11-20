@@ -49,6 +49,28 @@ function utf8Decode(bytes: Uint8Array): string {
   return s;
 }
 
+// Minimal UTF-8 encoder, for notes and pings on a WebRTC call's data channel (older React Native
+// engines have no global TextEncoder either).
+function utf8Encode(s: string): Uint8Array {
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(s);
+  const out: number[] = [];
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) as number;
+    if (cp < 0x80) out.push(cp);
+    else if (cp < 0x800) out.push(0xc0 | (cp >> 6), 0x80 | (cp & 0x3f));
+    else if (cp < 0x10000) out.push(0xe0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+    else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
+  }
+  return new Uint8Array(out);
+}
+
+/**
+ * The data-channel topic notes and activity pings travel on during a WebRTC call — the web
+ * socket's own JSON; the replies come back with every other server event (Telenow:
+ * `providers/telephony/livekit.rs`, `live_context::client_events::DATA_TOPIC`).
+ */
+const CONTEXT_TOPIC = 'tn-context';
+
 export type CallState = 'idle' | 'connecting' | 'live' | 'reconnecting' | 'ended' | 'error';
 
 /**
@@ -100,7 +122,8 @@ export class TelenowContextError extends Error {
   /**
    * `reason` is the stable code: from the server `disabled`, `too_large`, `rate_limited`, `empty`,
    * `engine_unsupported`, `no_agent`, `not_live`, `invalid_respond`; from the SDK `not_connected`,
-   * `connection_lost`, `call_ended`, `unsupported_transport`. `maxChars`, for `too_large`: how many
+   * `connection_lost`, `call_ended` (`unsupported_transport`, which older versions sent on a WebRTC
+   * call, is no longer sent: notes and pings go on its data channel). `maxChars`, for `too_large`: how many
    * of the note's characters (Unicode code points — cut with `Array.from(text).slice(0, n)`) would
    * fit right now.
    */
@@ -285,7 +308,8 @@ export class TelenowCall {
     const room = new lk.Room();
     this.lkRoom = room;
     room.on(lk.RoomEvent.DataReceived, (payload: Uint8Array) => {
-      // Transcript over the data channel — same JSON the WS path delivers.
+      // Transcripts and the replies to notes and pings over the data channel — the same JSON the
+      // WS path delivers, settling the same queue.
       let m: any;
       try {
         m = JSON.parse(utf8Decode(payload));
@@ -293,6 +317,7 @@ export class TelenowCall {
         return;
       }
       if (m.event === 'transcript') this.onTranscript?.(String(m.role ?? ''), String(m.text ?? ''));
+      else this.settleReply(m);
     });
     room.on(lk.RoomEvent.Disconnected, () => this.teardown());
     await room.connect(sess.livekitUrl, sess.token);
@@ -314,8 +339,6 @@ export class TelenowCall {
    * Resolves with when the agent will see it; rejects with a {@link TelenowContextError}.
    */
   sendContext(text: string, opts?: ContextOptions): Promise<ContextDelivery> {
-    // WebRTC has no server-bound data channel for this yet.
-    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
     const frame = {
       event: 'contextual_update',
       text: wellFormed(text),
@@ -323,11 +346,11 @@ export class TelenowCall {
       ...(opts?.respond ? { respond: opts.respond } : {}),
     };
     return new Promise((resolve, reject) => {
-      if (!this.socket?.send(JSON.stringify(frame))) {
-        reject(new TelenowContextError('not_connected'));
-        return;
+      const owed = { resolve, reject };
+      this.pendingContext.push(owed);
+      if (!this.sendContextFrame(frame, () => this.dropOwed(this.pendingContext, owed))) {
+        this.dropOwed(this.pendingContext, owed);
       }
-      this.pendingContext.push({ resolve, reject });
     });
   }
 
@@ -338,14 +361,38 @@ export class TelenowCall {
    * your own input handlers, at most about once per the interval it last returned.
    */
   sendActivity(): Promise<number | null> {
-    if (this.lkRoom) return Promise.reject(new TelenowContextError('unsupported_transport'));
     return new Promise((resolve, reject) => {
-      if (!this.socket?.send(JSON.stringify({ event: 'user_activity' }))) {
-        reject(new TelenowContextError('not_connected'));
-        return;
+      const owed = { resolve, reject };
+      this.pendingActivity.push(owed);
+      if (!this.sendContextFrame({ event: 'user_activity' }, () => this.dropOwed(this.pendingActivity, owed))) {
+        this.dropOwed(this.pendingActivity, owed);
       }
-      this.pendingActivity.push({ resolve, reject });
     });
+  }
+
+  /**
+   * A note or an activity ping to the server: on the web socket, or — a WebRTC call has no socket
+   * to the server — the room's reliable data channel under `tn-context`, in order. False when the
+   * call cannot carry it now. `lost`: a WebRTC send that failed after it was handed over (no reply
+   * will come for it).
+   */
+  private sendContextFrame(frame: Record<string, unknown>, lost: () => void): boolean {
+    if (this.lkRoom) {
+      if (this.ended) return false;
+      Promise.resolve()
+        .then(() => this.lkRoom.localParticipant.publishData(utf8Encode(JSON.stringify(frame)), { reliable: true, topic: CONTEXT_TOPIC }))
+        .catch(lost);
+      return true;
+    }
+    return this.socket?.send(JSON.stringify(frame)) ?? false;
+  }
+
+  /** A reply that will never come: out of the queue, so the next reply pairs with the next send. */
+  private dropOwed<T extends { reject: (e: Error) => void }>(queue: T[], owed: T): void {
+    const i = queue.indexOf(owed);
+    if (i < 0) return;
+    queue.splice(i, 1);
+    owed.reject(new TelenowContextError('not_connected'));
   }
 
   /** Rejects every reply still owed: it can no longer arrive. */
@@ -433,7 +480,14 @@ export class TelenowCall {
       this.onTranscript?.(String(m.role), String(m.text));
     } else if (m.event === 'session_end') {
       this.stop();
-    } else if (m.event === 'context_ack' || m.event === 'context_rejected') {
+    } else {
+      this.settleReply(m);
+    }
+  }
+
+  /** A reply to a note or an activity ping (either transport): it settles the oldest one owed. */
+  private settleReply(m: any): void {
+    if (m.event === 'context_ack' || m.event === 'context_rejected') {
       const p = this.pendingContext.shift();
       if (m.event === 'context_ack') {
         const d = m.delivery;
