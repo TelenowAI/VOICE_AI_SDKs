@@ -74,8 +74,8 @@ test('WebRTC: a note and a ping go on tn-context, reliably, and the replies sett
   const note = call.sendContext('Cart: 2 items', { key: 'cart', respond: 'when_idle' });
   const ping = call.sendActivity();
   await tick();
-  assert.deepEqual(sentOf(room, 'contextual_update'), [{ event: 'contextual_update', text: 'Cart: 2 items', key: 'cart', respond: 'when_idle' }]);
-  assert.deepEqual(sentOf(room, 'user_activity'), [{ event: 'user_activity' }]);
+  assert.deepEqual(sentOf(room, 'contextual_update'), [{ event: 'contextual_update', text: 'Cart: 2 items', key: 'cart', respond: 'when_idle', id: 'tn1' }]);
+  assert.deepEqual(sentOf(room, 'user_activity'), [{ event: 'user_activity', id: 'tn2' }]);
   for (const p of room.published) assert.deepEqual(p.options, { reliable: true, topic: 'tn-context' });
   room.emit({ event: 'context_ack', key: 'cart', noteId: 'n1', delivery: 'speaking_now' });
   room.emit({ event: 'activity_ack', nextCheckinInMs: 5000 });
@@ -120,8 +120,38 @@ test('WebRTC: with no global TextEncoder (older engines), a note in Hindi with a
   } finally {
     globalThis.TextEncoder = real;
   }
-  assert.deepEqual(sentOf(room, 'contextual_update'), [{ event: 'contextual_update', text: 'कार्ट में 2 चीज़ें 🛒 é', key: 'cart' }]);
+  assert.deepEqual(sentOf(room, 'contextual_update'), [{ event: 'contextual_update', text: 'कार्ट में 2 चीज़ें 🛒 é', key: 'cart', id: 'tn1' }]);
   room.emit({ event: 'context_ack', key: 'cart', noteId: 'n3', delivery: 'next_turn' });
   assert.equal(await p, 'next_turn');
   call.stop();
+});
+
+// Review 2026-11-21: the data channel answers only what the server saw (a message sent before the agent's
+// side joined, after the call ended there, or to a server too old to read it gets nothing). Paired
+// oldest-first, every later note then settled with the previous one's answer, and the lost one never settled.
+test('WebRTC: each reply settles the message whose id it carries; one the server never saw rejects no_reply on its own', async () => {
+  const realTimeout = TelenowCall.replyTimeoutMs;
+  TelenowCall.replyTimeoutMs = 40;
+  try {
+    const { call, room } = await rtcCall();
+    const unseen = call.sendActivity();
+    const seen = call.sendContext('Viewing: blue kurta', { key: 'page' });
+    await tick();
+    const [a] = sentOf(room, 'user_activity');
+    const [b] = sentOf(room, 'contextual_update');
+    assert.ok(a.id && b.id && a.id !== b.id, 'each message carries its own id');
+    room.emit({ event: 'context_ack', key: 'page', delivery: 'held', id: b.id });
+    assert.equal(await seen, 'held');
+    await assert.rejects(unseen, (e) => e instanceof TelenowContextError && e.reason === 'no_reply');
+    // A late reply to it settles nothing; the next ping gets its own answer.
+    room.emit({ event: 'activity_ack', nextCheckinInMs: 9000, id: a.id });
+    const next = call.sendActivity();
+    await tick();
+    const c = sentOf(room, 'user_activity')[1];
+    room.emit({ event: 'activity_ack', nextCheckinInMs: 5000, id: c.id });
+    assert.equal(await next, 5000);
+    call.stop();
+  } finally {
+    TelenowCall.replyTimeoutMs = realTimeout;
+  }
 });

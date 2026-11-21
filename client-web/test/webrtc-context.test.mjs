@@ -77,8 +77,8 @@ test('WebRTC: sendContext publishes the socket’s own frame on tn-context, reli
   const second = call.sendContext('Viewing: blue kurta', { key: 'page', respond: 'when_idle' });
   await tick();
   assert.deepEqual(sentOf(room, 'contextual_update'), [
-    { event: 'contextual_update', text: 'Cart: 1 item' },
-    { event: 'contextual_update', text: 'Viewing: blue kurta', key: 'page', respond: 'when_idle' },
+    { event: 'contextual_update', text: 'Cart: 1 item', id: 'tn1' },
+    { event: 'contextual_update', text: 'Viewing: blue kurta', key: 'page', respond: 'when_idle', id: 'tn2' },
   ]);
   for (const p of room.published) assert.deepEqual(p.options, { reliable: true, topic: 'tn-context' });
   room.emit({ event: 'context_ack', key: null, noteId: 'n1', delivery: 'next_turn' });
@@ -92,7 +92,7 @@ test('WebRTC: sendActivity publishes user_activity; the ack resolves with the wi
   const { call, room } = await rtcCall();
   const armed = call.sendActivity();
   await tick();
-  assert.deepEqual(sentOf(room, 'user_activity'), [{ event: 'user_activity' }]);
+  assert.deepEqual(sentOf(room, 'user_activity'), [{ event: 'user_activity', id: 'tn1' }]);
   room.emit({ event: 'activity_ack', nextCheckinInMs: 5000 });
   assert.equal(await armed, 5000);
   const refused = call.sendActivity();
@@ -156,6 +156,62 @@ test('WebRTC: autoActivity pings on tn-context, parks on null, and a transcript 
     assert.equal(pings(), 2, 'the conversation moved on: probe again');
     call.stop();
   } finally {
+    if (hadDocument) globalThis.document = realDocument;
+    else delete globalThis.document;
+  }
+});
+
+// Review 2026-11-21: the data channel answers only what the server saw — a message sent before the agent's
+// side joined the room, after the call ended there, or to a server too old to read it gets nothing. Paired
+// oldest-first, every later note then settled with the previous note's answer, and the lost one never settled.
+test('WebRTC: each reply settles the message whose id it carries; one the server never saw rejects no_reply on its own', async () => {
+  const realTimeout = TelenowCall.replyTimeoutMs;
+  TelenowCall.replyTimeoutMs = 40;
+  try {
+    const { call, room } = await rtcCall();
+    const unseen = call.sendContext('sent before the agent joined');
+    const seen = call.sendContext('Viewing: blue kurta', { key: 'page' });
+    await tick();
+    const [a, b] = sentOf(room, 'contextual_update');
+    assert.ok(a.id && b.id && a.id !== b.id, 'each message carries its own id');
+    room.emit({ event: 'context_ack', key: 'page', delivery: 'held', id: b.id });
+    assert.equal(await seen, 'held', 'the reply settles its own message, not the oldest one owed');
+    await assert.rejects(unseen, (e) => e instanceof TelenowContextError && e.reason === 'no_reply');
+    // A late reply to it settles nothing; the next message still gets its own answer.
+    room.emit({ event: 'context_rejected', key: null, reason: 'too_large', maxChars: 10, id: a.id });
+    const next = call.sendContext('next');
+    await tick();
+    const c = sentOf(room, 'contextual_update')[2];
+    room.emit({ event: 'context_ack', key: null, delivery: 'next_turn', id: c.id });
+    assert.equal(await next, 'next_turn');
+    call.stop();
+  } finally {
+    TelenowCall.replyTimeoutMs = realTimeout;
+  }
+});
+
+test('WebRTC: a ping that gets no reply rejects no_reply and parks autoActivity until the conversation moves on', async () => {
+  const realTimeout = TelenowCall.replyTimeoutMs;
+  TelenowCall.replyTimeoutMs = 30;
+  const hadDocument = 'document' in globalThis;
+  const realDocument = globalThis.document;
+  globalThis.document = new EventTarget();
+  try {
+    const { call, room } = await rtcCall({ autoActivity: true });
+    const press = () => globalThis.document.dispatchEvent(new Event('keydown'));
+    const pings = () => sentOf(room, 'user_activity').length;
+    await assert.rejects(call.sendActivity(), (e) => e.reason === 'no_reply');
+    press();
+    press();
+    await tick();
+    assert.equal(pings(), 1, 'parked: no ping per keystroke against a server that does not answer');
+    room.emit({ event: 'transcript', role: 'user', text: 'haan', isFinal: true });
+    press();
+    await tick();
+    assert.equal(pings(), 2, 'the conversation moved on: probe again');
+    call.stop();
+  } finally {
+    TelenowCall.replyTimeoutMs = realTimeout;
     if (hadDocument) globalThis.document = realDocument;
     else delete globalThis.document;
   }
